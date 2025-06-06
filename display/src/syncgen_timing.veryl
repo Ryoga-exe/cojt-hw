@@ -1,0 +1,161 @@
+/// VGA (640x480)
+package VgaTiming {
+    // resolution
+    const width : u32 = 640;
+    const height: u32 = 480;
+
+    // horizontal timing
+    const hsc: u32 = 800; /// Horizontal Sync Cycle
+    const hfp: u32 = 16; /// Horizontal Front Porch
+    const hpw: u32 = 96; /// Horizontal Sync Pulse Width
+    const hbp: u32 = 48; /// Horizontal Back Porch
+
+    // vertical timing
+    const vsc: u32 = 525; /// Vertical Sync Cycle
+    const vfp: u32 = 10; /// Vertical Front Porch
+    const vpw: u32 = 2; /// Vertical Sync Pulse Width
+    const vbp: u32 = 33; /// Horizontal Back Porch
+
+    // Effective pixel area (derived constant)
+    const hdo: u32 = width;
+    const vdo: u32 = height;
+}
+
+/// XGA (1024x768)
+package XgaTiming {
+    // resolution
+    const width : u32 = 1024;
+    const height: u32 = 768;
+
+    // horizontal timing
+    const hsc: u32 = 1344; /// Horizontal Sync Cycle
+    const hfp: u32 = 24; /// Horizontal Front Porch
+    const hpw: u32 = 136; /// Horizontal Sync Pulse Width
+    const hbp: u32 = 160; /// Horizontal Back Porch
+
+    // vertical timing
+    const vsc: u32 = 806; /// Vertical Sync Cycle
+    const vfp: u32 = 3; /// Vertical Front Porch
+    const vpw: u32 = 6; /// Vertical Sync Pulse Width
+    const vbp: u32 = 29; /// Horizontal Back Porch
+
+    // Effective pixel area (derived constant)
+    const hdo: u32 = width;
+    const vdo: u32 = height;
+}
+
+// SVGA (800x600)
+// package SvgaTiming {
+//     // resolution
+//     const width : u32 = 800;
+//     const height: u32 = 600;
+//
+//     // horizontal timing
+//     const hsc: u32 = 1056; /// Sync Cycle
+//     const hfp: u32 = 40; /// Front Porch
+//     const hpw: u32 = 128; /// Sync Pulse Width
+//     const hbp: u32 = 88; /// Back Porch
+//
+//     // vertical timing
+//     const vsc: u32 = 628; /// Vertical Sync Cycle
+//     const vfp: u32 = 1; /// Vertical Front Porch
+//     const vpw: u32 = 4; /// Vertical Sync Pulse Width
+//     const vbp: u32 = 23; /// Horizontal Back Porch
+//
+//     // Effective pixel area (derived constant)
+//     const hdo: u32 = width;
+//     const vdo: u32 = height;
+// }
+
+/// SXGA (1280x1024)
+package SxgaTiming {
+    // resolution
+    const width : u32 = 1280;
+    const height: u32 = 1024;
+
+    // horizontal timing
+    const hsc: u32 = 1688; /// Sync Cycle
+    const hfp: u32 = 48; /// Front Porch
+    const hpw: u32 = 112; /// Sync Pulse Width
+    const hbp: u32 = 248; /// Back Porch
+
+    // vertical timing
+    const vsc: u32 = 1066; /// Vertical Sync Cycle
+    const vfp: u32 = 1; /// Vertical Front Porch
+    const vpw: u32 = 3; /// Vertical Sync Pulse Width
+    const vbp: u32 = 38; /// Horizontal Back Porch
+
+    // Effective pixel area (derived constant)
+    const hdo: u32 = width;
+    const vdo: u32 = height;
+}
+
+import Resolution::Mode;
+
+pub module SyncgenTimingSel (
+    mode: input Mode,
+
+    hsc: output logic<11>,
+    hfp: output logic<6> ,
+    hpw: output logic<8> ,
+    hbp: output logic<8> ,
+    hdo: output logic<11>,
+    vsc: output logic<11>,
+    vfp: output logic<4> ,
+    vpw: output logic<3> ,
+    vbp: output logic<6> ,
+    vdo: output logic<11>,
+) {
+    always_comb {
+        case mode {
+            Mode::vga: {
+                           hsc = VgaTiming::hsc;
+                           hfp = VgaTiming::hfp;
+                           hpw = VgaTiming::hpw;
+                           hbp = VgaTiming::hbp;
+                           hdo = VgaTiming::hdo;
+                           vsc = VgaTiming::vsc;
+                           vfp = VgaTiming::vfp;
+                           vpw = VgaTiming::vpw;
+                           vbp = VgaTiming::vbp;
+                           vdo = VgaTiming::vdo;
+                       }
+            Mode::xga: {
+                           hsc = XgaTiming::hsc;
+                           hfp = XgaTiming::hfp;
+                           hpw = XgaTiming::hpw;
+                           hbp = XgaTiming::hbp;
+                           hdo = XgaTiming::hdo;
+                           vsc = XgaTiming::vsc;
+                           vfp = XgaTiming::vfp;
+                           vpw = XgaTiming::vpw;
+                           vbp = XgaTiming::vbp;
+                           vdo = XgaTiming::vdo;
+                       }
+            Mode::sxga: {
+                            hsc = SxgaTiming::hsc;
+                            hfp = SxgaTiming::hfp;
+                            hpw = SxgaTiming::hpw;
+                            hbp = SxgaTiming::hbp;
+                            hdo = SxgaTiming::hdo;
+                            vsc = SxgaTiming::vsc;
+                            vfp = SxgaTiming::vfp;
+                            vpw = SxgaTiming::vpw;
+                            vbp = SxgaTiming::vbp;
+                            vdo = SxgaTiming::vdo;
+                        }
+            default: {
+                         hsc = VgaTiming::hsc;
+                         hfp = VgaTiming::hfp;
+                         hpw = VgaTiming::hpw;
+                         hbp = VgaTiming::hbp;
+                         hdo = VgaTiming::hdo;
+                         vsc = VgaTiming::vsc;
+                         vfp = VgaTiming::vfp;
+                         vpw = VgaTiming::vpw;
+                         vbp = VgaTiming::vbp;
+                         vdo = VgaTiming::vdo;
+                     }
+        }
+    }
+}
