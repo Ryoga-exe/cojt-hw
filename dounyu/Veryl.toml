@@ -1,7 +1,7 @@
 [project]
 name = "dounyu"
 version = "0.1.0"
-repository = "https://github.com/Ryoga-exe/cojt-hw/dounyu"
+repository = "https://github.com/Ryoga-exe/cojt-hw/tree/main/dounyu"
 
 [build]
 source = "src"
