@@ -1,0 +1,10 @@
+package Palette {
+    const Red    : logic<24> = 24'hFF0000;
+    const Green  : logic<24> = 24'h00FF00;
+    const Blue   : logic<24> = 24'h0000FF;
+    const Magenta: logic<24> = 24'hFF00FF;
+    const Yellow : logic<24> = 24'hFFFF00;
+    const Cyan   : logic<24> = 24'h00FFFF;
+    const Black  : logic<24> = 24'h000000;
+    const White  : logic<24> = 24'hFFFFFF;
+}

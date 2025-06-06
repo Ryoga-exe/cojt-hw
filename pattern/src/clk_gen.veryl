@@ -1,0 +1,39 @@
+/// Clock generator and pixel-clock selector
+///
+/// ## Purpose
+/// - Derive the pixel clocks required for VGA (25MHZ) or XGA (65MHz) from a single 100MHz system reference.
+/// - Provide the unmodified 100MHz clock to the rest of the design.
+///
+/// ## Operation
+/// An MMCM (instantiated as clk_core) generates three phase-aligned clocks:
+/// - clk_out1 = 100MHz (system fabric)
+/// - clk25MHz = 25MHz  (VGA 640x480 @60Hz)
+/// - clk65MHz = 65MHz  (XGA 1024x768 @60Hz)
+///
+/// BUFGMUX_CTRL switches dclk between clk25MHz and clk65MHz at run time
+/// according to clk_sel, allowing seamless resolution changes.
+pub module clk_gen (
+    clk_in1 : input  '_ clock, /// system clock (100MHz)
+    clk_sel : input     logic, /// clock select (0: 25MHz, 1: 65MHz)
+    clk_out1: output    logic, /// 100MHz fabric clock
+    dclk    : output '_ clock, /// pixel clock (25MHz or 65MHz, selected by clk_sel)
+) {
+    var clk25MHz: logic;
+    var clk65MHz: logic;
+
+    // MMCM: derive the required frequencies from clk_in1
+    inst i_clk_core: $sv::clk_core (
+        clk_out1          , // 100MHz
+        clk_out2: clk25MHz, // 25MHz
+        clk_out3: clk65MHz, // 65MHz
+        clk_in1           ,
+    );
+
+    // BUFGMUX: runtime selection of the active pixel clock
+    inst i_BUFGMUX_CTRL: $sv::BUFGMUX_CTRL (
+        O : dclk    , // Selected pixel clock
+        I0: clk25MHz, // VGA clock (S=0)
+        I1: clk65MHz, // XGA clock (S=1)
+        S : clk_sel , // Select line
+    );
+}

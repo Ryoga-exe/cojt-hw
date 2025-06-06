@@ -1,0 +1,80 @@
+/// Multi-resolution clock generator
+///
+/// ## Purpose
+/// - Deliver four pixel-clock options (VGA, SVGA, XGA, SXGA) from a single 100MHz system reference.
+/// - Buffer and export the untouched 100MHz fabric clock.
+///
+/// ## Clock map
+/// | `clk_sel` | Format | dclk (MHz) |
+/// |-----------|--------|------------|
+/// | 2b'00     | VGA    |  25.175    |
+/// | 2b'01     | XGA    |  65.000    |
+/// | 2b'10     | SVGA   |  40.000    |
+/// | 2b'11     | SXGA   | 108.000    |
+///
+/// ## Implementation
+/// - An MMCM (clk_core) creates 25MHz and 65MHz clocks directly from clk_in1 and also rebuffers the 100MHz reference.
+/// - A cascaded PLL (clk_core2) uses the 100MHz MMCM output to generate 40MHz and 108MHz clocks; its feedback path is closed through a BUFG to ensure jitter-free operation.
+/// - Two BUFGMUX_CTRL blocks pick one clock from each low/high-frequency pair; a third BUFGMUX_CTRL chooses between those pairs, yielding the final dclk.
+pub module clk_gen2 (
+    clk_in1 : input  clock           , /// 100MHz reference
+    clk_sel : input  Resolution::Mode, /// Resolution selector
+    clk_out1: output logic           , /// 100MHz system clock
+    dclk    : output logic, /// 25/40/65/108 MHz pixel clock
+) {
+    var clk25MHz : logic; // for VGA
+    var clk65MHz : logic; // for XGA
+    var clk40MHz : logic; // for SVGA
+    var clk108MHz: logic; // for SXGA
+    var clkfb_out: logic; // for PLL feedback out
+    var clkfb_in : logic; // for PLL feedback in
+    var dclk_a   : logic; // 25MHz or 65MHz
+    var dclk_b   : logic; // 40MHz or 108MHz
+
+    // MMCM: 25MHz, 65MHz and re-buffered 100MHz
+    inst i_clk_core: $sv::clk_core (
+        clk_out1          , // output clk_out1 (100MHz)
+        clk_out2: clk25MHz, // output clk_out2 (25MHz)
+        clk_out3: clk65MHz, // output clk_out3 (65MHz)
+        clk_in1           , // input clk_in1
+    );
+
+    // PLL: 40MHz and 108MHz (driven from clk_out1)
+    inst i_clk_core2: $sv::clk_core2 (
+        clkfb_in            , // input clkfb_in
+        clk_out1 : clk40MHz , // output clk_out1 (40MHz)
+        clk_out2 : clk108MHz, // output clk_out2 (108MHz)
+        clkfb_out           , // output clkfb_out
+        clk_in1  : clk_out1 , // input clk_out1
+    );
+
+    // Feedback BUFG for the PLL
+    inst i_BUFG: $sv::BUFG (
+        O: clkfb_in , // 1-bit output: Clock output
+        I: clkfb_out, // 1-bit input: Clock input
+    );
+
+    // clock select BUFG (VGA/XGA)
+    inst i_BUFGMUX_CTRL_A: $sv::BUFGMUX_CTRL (
+        O : dclk_a    , // 1-bit output: Clock output
+        I0: clk25MHz  , // 1-bit input: Clock input (S=0)
+        I1: clk65MHz  , // 1-bit input: Clock input (S=1)
+        S : clk_sel[0], // 1-bit input: Clock select
+    );
+
+    // clock select BUFG (SVGA/SXGA)
+    inst i_BUFGMUX_CTRL_B: $sv::BUFGMUX_CTRL (
+        O : dclk_b    , // 1-bit output: Clock output
+        I0: clk40MHz  , // 1-bit input: Clock input (S=0)
+        I1: clk108MHz , // 1-bit input: Clock input (S=1)
+        S : clk_sel[0], // 1-bit input: Clock select
+    );
+
+    // clock select BUFG (VGA/XGA/SVGA/SXGA)
+    inst i_BUFGMUX_CTRL_O: $sv::BUFGMUX_CTRL (
+        O : dclk      , // 1-bit output: Clock output
+        I0: dclk_a    , // 1-bit input: Clock input (S=0)
+        I1: dclk_b    , // 1-bit input: Clock input (S=1)
+        S : clk_sel[1], // 1-bit input: Clock select
+    );
+}

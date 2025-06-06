@@ -1,0 +1,66 @@
+/// Sync-generator (VGA 640x480 @60Hz / XGA 1024x768 @60Hz)
+pub module syncgen (
+    DCLK: input clock           ,
+    DRST: input reset           ,
+    mode: input Resolution::Mode,
+
+    DSP_HSYNC_X: output logic    , /// horizontal sync (active-low)
+    DSP_VSYNC_X: output logic    , /// vertical sync (active-low)
+    DSP_preDE  : output logic    , /// one clock cycle before DE
+    HCNT       : output logic<11>, /// horizontal counter
+    VCNT       : output logic<11>, /// vertical counter
+) {
+    var hsc: logic<11>;
+    var hfp: logic<6> ;
+    var hpw: logic<8> ;
+    var hbp: logic<8> ;
+    var hdo: logic<11>;
+    var vsc: logic<11>;
+    var vfp: logic<4> ;
+    var vpw: logic<3> ;
+    var vbp: logic<6> ;
+    var vdo: logic<11>;
+
+    inst i_tming: SyncgenTimingSel (
+        mode  ,
+        hsc   ,
+        hfp   ,
+        hpw   ,
+        hbp   ,
+        hdo   ,
+        vsc   ,
+        vfp   ,
+        vpw   ,
+        vbp   ,
+        vdo   ,
+    );
+
+    // horizontal counter
+    always_ff {
+        if_reset {
+            HCNT = 0;
+        } else {
+            HCNT = if HCNT == hsc - 1 ? 0 : HCNT + 1;
+        }
+    }
+
+    // vertical counter
+    always_ff {
+        if_reset {
+            VCNT = 0;
+        } else if HCNT == hsc - 1 {
+            VCNT = if VCNT == vsc - 1 ? 0 : VCNT + 1;
+        }
+    }
+
+    // DSP_preDE
+    let hcnt_nxt : logic<11> = if HCNT == hsc - 1 ? 0 : HCNT + 1;
+    let vcnt_nxt : logic<11> = if HCNT == hsc - 1 ? (if VCNT == vsc - 1 ? 0 : VCNT + 1) : VCNT;
+    assign DSP_preDE = (hcnt_nxt <: hdo) & (vcnt_nxt <: vdo);
+
+    // DSP_VSYNC_X
+    assign DSP_HSYNC_X = ~((HCNT >= hdo + hfp) && (HCNT <: hdo + hfp + hpw));
+
+    // DSP_VSYNC_X
+    assign DSP_VSYNC_X = ~((VCNT >= vdo + vfp) && (VCNT <: vdo + vfp + vpw));
+}

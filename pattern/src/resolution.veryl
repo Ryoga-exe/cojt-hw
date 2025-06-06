@@ -1,0 +1,8 @@
+package Resolution {
+    enum Mode: logic<2> {
+        vga,
+        xga,
+        svga,
+        sxga,
+    }
+}

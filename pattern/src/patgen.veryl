@@ -1,0 +1,152 @@
+/// Pattern-generator (VGA 640x480 @60Hz / XGA 1024x768 @60Hz)
+pub module patgen (
+    DCLK    : input clock,
+    RST     : input reset,
+    BTNR_ONE: input logic, /// resolution signal
+
+    mode       : output Resolution::Mode   , /// resolution signal (synchronized to VCNT & HCNT)
+    DSP_HSYNC_X: output logic              , /// horizontal sync (active-low)
+    DSP_VSYNC_X: output logic              , /// vertical sync (active-low)
+    DSP_DE     : output logic              , /// display-enable
+    DSP_R      : output logic           <8>,
+    DSP_G      : output logic           <8>,
+    DSP_B      : output logic           <8>,
+) {
+    var hsc: logic<11>;
+    var hfp: logic<6> ;
+    var hpw: logic<8> ;
+    var hbp: logic<8> ;
+    var hdo: logic<11>;
+    var vsc: logic<11>;
+    var vfp: logic<4> ;
+    var vpw: logic<3> ;
+    var vbp: logic<6> ;
+    var vdo: logic<11>;
+
+    inst i_tming: SyncgenTimingSel (
+        mode  ,
+        hsc   ,
+        hfp   ,
+        hpw   ,
+        hbp   ,
+        hdo   ,
+        vsc   ,
+        vfp   ,
+        vpw   ,
+        vbp   ,
+        vdo   ,
+    );
+
+    let DRST    : default reset    = drst_ff[1]; // synchronized RST
+    let mode_req: Resolution::Mode = mode_ff; // de-bounced request inside clk domain
+
+    var drst_ff  : logic           <2> ; // synchronizing FF for DRST
+    var mode_ff  : Resolution::Mode    ; // synchronizing FF for resolution
+    var HCNT     : logic           <11>; // horizontal counter from syncgen
+    var VCNT     : logic           <11>; // horizontal counter from syncgen
+    var DSP_preDE: logic               ;
+
+    // synchronizing FF for DRST
+    always_ff {
+        drst_ff = {drst_ff[0], RST};
+    }
+
+    // synchronizing FF for resolution
+    always_ff {
+        if_reset {
+            mode_ff = Resolution::Mode::vga;
+        } else {
+            if BTNR_ONE {
+                mode_ff = case mode_ff {
+                    Resolution::Mode::vga : Resolution::Mode::xga,
+                    Resolution::Mode::xga : Resolution::Mode::svga,
+                    Resolution::Mode::svga: Resolution::Mode::sxga,
+                    default               : Resolution::Mode::vga,
+                };
+            }
+        }
+    }
+
+    // sync xga to HCNT & VCNT
+    always_ff {
+        if_reset {
+            mode = Resolution::Mode::vga;
+        } else {
+            if (HCNT == hsc - 1) && (VCNT == vsc - 1) {
+                mode = mode_req;
+            }
+        }
+    }
+
+    // syncgen instance
+    inst i_syncgen: syncgen (
+        DCLK         ,
+        DRST         ,
+        mode         ,
+        DSP_HSYNC_X  ,
+        DSP_VSYNC_X  ,
+        DSP_preDE    ,
+        HCNT         ,
+        VCNT         ,
+    );
+
+    // Pattern generator core
+    let tile_w: logic<11> = hdo >> 3;
+    let tile_h: logic<11> = vdo >> 2;
+
+    var row: u32;
+    var col: u32;
+    always_comb {
+        for i: u32 in 0..8 {
+            #[cond_type(unique0)]
+            if inside HCNT {i * tile_w..(i + 1) * tile_w} {
+                row = i;
+            }
+        }
+        for i: u32 in 0..4 {
+            #[cond_type(unique0)]
+            if inside VCNT {i * tile_h..(i + 1) * tile_h} {
+                col = i;
+            }
+        }
+    }
+    let sel: logic<3> = (row - col) as 3;
+
+    always_ff {
+        if_reset {
+            DSP_DE = 0;
+            DSP_R  = 0;
+            DSP_G  = 0;
+            DSP_B  = 0;
+        } else {
+            // 1-clk delay of DE
+            DSP_DE = DSP_preDE;
+
+            // compute RGB on the cycle DE is asserted
+            if DSP_DE {
+                let pat: logic<24> = case sel {
+                    0      : Palette::Red,
+                    1      : Palette::Green,
+                    2      : Palette::Blue,
+                    3      : Palette::Magenta,
+                    4      : Palette::Yellow,
+                    5      : Palette::Cyan,
+                    6      : Palette::Black,
+                    default: Palette::White,
+                };
+                DSP_R = pat[23:16];
+                DSP_G = pat[15:8];
+                DSP_B = pat[7:0];
+
+            } else {
+                // blanking period
+                DSP_R = 0;
+                DSP_G = 0;
+                DSP_B = 0;
+            }
+        }
+    }
+}
+
+#[test(tb_patgen)]
+include (inline, "tb/tb_patgen.sv");

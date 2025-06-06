@@ -1,0 +1,112 @@
+pub module BASYS3_PATTERN (
+    CLKIN: input clock, //system clock 100MHz
+    btnR : input logic, //push sw Right (resolution sw)
+    btnL : input logic, //push sw Left (no use)
+    btnU : input logic, //push sw Up (no use)
+    btnD : input logic, //push sw Down (reset)
+    btnC : input logic, //push sw Center (no use)
+
+    RED0 : output logic    , //RED0
+    RED1 : output logic    , //RED1
+    RED2 : output logic    , //RED2
+    RED3 : output logic    , //RED3
+    GRN0 : output logic    , //GREEN0
+    GRN1 : output logic    , //GREEN1
+    GRN2 : output logic    , //GREEN2
+    GRN3 : output logic    , //GREEN3
+    BLU0 : output logic    , //BLUE0
+    BLU1 : output logic    , //BLUE1
+    BLU2 : output logic    , //BLUE2
+    BLU3 : output logic    , //BLUE3
+    HSYNC: output logic    , //horizontal sync signal active lo
+    VSYNC: output logic    , //vertical sync signal active lo
+    an   : output logic<4> ,
+    dp   : output logic    ,
+    seg  : output logic<7> ,
+    led  : output logic<16>,
+) {
+    var clk     : '_ default clock      ; // 100MHz
+    var dclk    : '_ clock              ; // 25MHz or 65MHz
+    var rst     : '_ default reset      ;
+    var exrst   :    reset              ; // extended reset
+    var exrst_ff:    logic           <8>; // shift register for exrst
+    var rone    :    logic              ;
+    var RED     :    logic           <8>; // DSP_R
+    var GRN     :    logic           <8>; // DSP_G
+    var BLU     :    logic           <8>; // DSP_B
+    var mode    :    Resolution::Mode   ;
+
+    assign an  = '1;
+    assign dp  = '1;
+    assign seg = '1;
+    // assign led = {rtgl, 0 repeat 15};
+    assign led = '0;
+
+    always_ff {
+        exrst_ff = {exrst_ff[6:0], rst};
+    }
+
+    always_ff {
+        if_reset {
+            exrst = 1'b1;
+        } else if exrst_ff[7] == 1'b1 {
+            exrst = 0;
+        }
+    }
+
+    // MMCM_Block
+    inst i_clk_gen2: clk_gen2 (
+        clk_in1 : CLKIN,
+        clk_sel : mode ,
+        clk_out1: clk  ,
+        dclk    : dclk ,
+    );
+
+    // push switch
+    inst i_btn: btn (
+        clk       ,
+        btnu: btnU,
+        btnr: btnR,
+        btnl: btnL,
+        btnd: btnD,
+        btnc: btnC,
+        uone: _   ,
+        utgl: _   ,
+        rone      ,
+        rtgl: _   ,
+        lone: _   ,
+        ltgl: _   ,
+        done: rst ,
+        dtgl: _   ,
+        cone: _   ,
+        ctgl: _   ,
+    );
+
+    inst i_patgen: patgen (
+        DCLK       : dclk ,
+        RST        : exrst,
+        BTNR_ONE   : rone ,
+        mode              ,
+        DSP_HSYNC_X: HSYNC,
+        DSP_VSYNC_X: VSYNC,
+        DSP_DE     : _    ,
+        DSP_R      : RED  ,
+        DSP_G      : GRN  ,
+        DSP_B      : BLU  ,
+    );
+
+    assign RED3 = RED[7];
+    assign RED2 = RED[5];
+    assign RED1 = RED[3];
+    assign RED0 = RED[1];
+
+    assign GRN3 = GRN[7];
+    assign GRN2 = GRN[5];
+    assign GRN1 = GRN[3];
+    assign GRN0 = GRN[1];
+
+    assign BLU3 = BLU[7];
+    assign BLU2 = BLU[5];
+    assign BLU1 = BLU[3];
+    assign BLU0 = BLU[1];
+}
