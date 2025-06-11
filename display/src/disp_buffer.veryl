@@ -1,0 +1,62 @@
+pub module disp_buffer (
+    // System Signals
+    ACLK: input 'a clock,
+    ARST: input 'a reset,
+
+    // Display Clock, Reset
+    DCLK: input '_ default clock,
+    DRST: input '_ reset        ,
+
+    // FIFO
+    DISPON    : input  logic    ,
+    FIFORST   : input  logic    ,
+    FIFOIN    : input  logic<64>,
+    FIFOWR    : input  logic    ,
+    DSP_preDE : input  logic    ,
+    BUF_WREADY: output logic    ,
+    BUF_OVER  : output logic    ,
+    BUF_UNDER : output logic    ,
+
+    // Output
+    DSP_R : output logic<8>,
+    DSP_G : output logic<8>,
+    DSP_B : output logic<8>,
+    DSP_DE: output logic   ,
+) {
+
+    var DSP_hpreDE   : logic    ;
+    var write_counter: logic<10>;
+    var pixel_data   : logic<24>;
+
+    assign BUF_WREADY = write_counter <: 10'd300;
+
+    always_ff {
+        DSP_hpreDE = DSP_preDE;
+        DSP_DE     = DSP_hpreDE;
+    }
+
+    always_ff {
+        DSP_R = pixel_data[23:16];
+        DSP_G = pixel_data[15:8];
+        DSP_B = pixel_data[7:0];
+    }
+
+    // FIFO
+    unsafe (cdc) {
+        inst i_fifo_48in24out_1024depth: $sv::fifo_48in24out_1024depth (
+            rst          : FIFORST                      ,
+            wr_clk       : ACLK                         ,
+            rd_clk       : DCLK                         ,
+            din          : {FIFOIN[23:0], FIFOIN[55:32]},
+            wr_en        : FIFOWR                       ,
+            rd_en        : DSP_preDE                    ,
+            dout         : pixel_data                   ,
+            full         : _                            ,
+            overflow     : BUF_OVER                     ,
+            empty        : _                            ,
+            valid        : _                            ,
+            underflow    : BUF_UNDER                    ,
+            wr_data_count: write_counter                ,
+        );
+    }
+}
