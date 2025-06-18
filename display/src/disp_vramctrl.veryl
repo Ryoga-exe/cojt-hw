@@ -129,7 +129,7 @@ pub module disp_vramctrl (
 
     // Data FSM
     always_comb {
-        ar_state_next = sr_state;
+        sr_state_next = sr_state;
         RREADY        = (sr_state == SRState::read);
 
         #[cond_type(unique)]
