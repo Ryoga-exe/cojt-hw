@@ -1,0 +1,50 @@
+/// VRAM controller
+pub module disp_vramctrl (
+    // System Signals
+    ACLK: input clock, /// system clock
+    ARST: input reset, /// system reset
+
+    // Read Address
+    ARADDR : output logic<32>,
+    ARVALID: output logic    ,
+    ARREADY: input  logic    ,
+
+    // Read Data
+    RLAST : input  logic,
+    RVALID: input  logic,
+    RREADY: output logic,
+
+    // Resolution
+    RESOL: input Resolution::Mode,
+
+    // Signal by other modules
+    VRSTART   : input logic    ,
+    DISPON    : input logic    ,
+    DISPADDR  : input logic<32>,
+    BUF_WREADY: input logic    ,
+) {
+    var hsc: logic<11>;
+    var hfp: logic<6> ;
+    var hpw: logic<8> ;
+    var hbp: logic<8> ;
+    var hdo: logic<11>;
+    var vsc: logic<11>;
+    var vfp: logic<4> ;
+    var vpw: logic<3> ;
+    var vbp: logic<6> ;
+    var vdo: logic<11>;
+
+    inst i_tming: SyncgenTimingSel (
+        mode: RESOL,
+        hsc        ,
+        hfp        ,
+        hpw        ,
+        hbp        ,
+        hdo        ,
+        vsc        ,
+        vfp        ,
+        vpw        ,
+        vbp        ,
+        vdo        ,
+    );
+}
