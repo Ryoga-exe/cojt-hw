@@ -131,7 +131,7 @@ assign M_AXI_ARUSER  = 'b0;
 reg [1:0]   arst_ff;
 
 always @( posedge ACLK ) begin
-    arst_ff <= { arst_ff[0], ‾ARESETN };
+    arst_ff <= { arst_ff[0], ~ARESETN };
 end
 
 wire ARST = arst_ff[1];
@@ -140,7 +140,7 @@ wire ARST = arst_ff[1];
 reg [1:0]   drst_ff;
 
 always @( posedge DCLK ) begin
-    drst_ff <= { drst_ff[0], ‾ARESETN };
+    drst_ff <= { drst_ff[0], ~ARESETN };
 end
 
 wire DRST = drst_ff[1];
@@ -202,7 +202,7 @@ disp_buffer disp_buffer (
     .DCLK       (DCLK),
     .DRST       (DRST),
     .DISPON     (DISPON),
-    .FIFORST    (‾DSP_VSYNC_X),
+    .FIFORST    (~DSP_VSYNC_X),
     .FIFOIN     (M_AXI_RDATA),
     .FIFOWR     (M_AXI_RVALID),
     .DSP_preDE  (DSP_preDE),
