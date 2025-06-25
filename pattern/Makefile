@@ -8,7 +8,7 @@ test:
 	$(VERYL) test --wave
 
 flow:
-	$(VIVADO) -mode batch -source script/vivado.tcl -nolog -nojournal
+	$(VIVADO) -mode batch -source scripts/vivado.tcl -nolog -nojournal
 
 clean:
 	$(VERYL) clean
