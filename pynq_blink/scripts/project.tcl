@@ -21,5 +21,13 @@ puts "INFO: source $design_tcl"
 source $design_tcl
 
 # Create HDL wrapper
+validate_bd_design
+generate_target {synthesis implementation} [get_files design_1.bd]
+
+make_wrapper -files [get_files design_1.bd] -top -force
+
+set wrapper_file [glob */design_1_wrapper.*]
+add_files -norecurse $wrapper_file
+update_compile_order -fileset sources_1
 
 exit
