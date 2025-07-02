@@ -29,4 +29,7 @@ set wrapper_files [make_wrapper -files [get_files design_1.bd] -top -force]
 add_files -norecurse $wrapper_files
 update_compile_order -fileset sources_1
 
+# Add constraints file
+add_files -fileset constrs_1 [ glob src/constr/*.xdc ]
+
 exit
