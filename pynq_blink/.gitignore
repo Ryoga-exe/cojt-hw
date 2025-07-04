@@ -2,3 +2,5 @@
 .Xil
 project
 *.xpr
+*.jou
+*.log
