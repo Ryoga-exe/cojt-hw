@@ -16,4 +16,4 @@ bitstream:
 
 clean:
 	$(VERYL) clean
-	rm -rf project .Xil
+	rm -rf project .Xil *.jou *.log
