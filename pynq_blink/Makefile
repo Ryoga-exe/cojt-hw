@@ -11,4 +11,4 @@ bitstream:
 		-nolog -nojournal
 
 clean:
-	rm -rf project .Xil
+	rm -rf project .Xil *.jou *.log
