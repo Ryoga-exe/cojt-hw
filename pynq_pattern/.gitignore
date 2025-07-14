@@ -1,0 +1,6 @@
+### Vivado
+.Xil
+project
+*.xpr
+*.jou
+*.log
