@@ -40,9 +40,11 @@ source $design_tcl
 validate_bd_design
 generate_target {synthesis implementation} [get_files design_1.bd]
 
-set wrapper_files [make_wrapper -files [get_files design_1.bd] -top -force]
-
+set wrapper_files [make_wrapper -files [get_files design_1.bd] -force]
 add_files -norecurse $wrapper_files
+
+# Set design_1_wrapper as Top
+set_property top design_1_wrapper [get_filesets sources_1]
 update_compile_order -fileset sources_1
 
 # Add constraints file
