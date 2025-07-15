@@ -41,7 +41,8 @@ set_property top design_1_wrapper [get_filesets sources_1]
 update_compile_order -fileset sources_1
 
 # --- Add Simulation Sources -----------------------------------
-add_files -fileset sim_1 [glob src/sim/*.sv]
+add_files -fileset sim_1 [glob src/sim/tb/*.sv]
+add_files -fileset sim_1 [glob src/sim/*raw]
 
 update_compile_order -fileset sim_1
 
