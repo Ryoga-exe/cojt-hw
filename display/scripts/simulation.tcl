@@ -15,27 +15,8 @@ add_files -fileset sources_1 target/disp_ip/hdl/display.v
 update_compile_order -fileset sources_1
 
 # --- Add FIFO ------------------------------------------
-set xci_path [file normalize "target/disp_ip/src/fifo_48in24out_1024depth/fifo_48in24out_1024depth.xci"]
-if {![file exists $xci_path]} {
-    puts "ERROR: .xci not found: $xci_path"
-    exit 1
-}
-
-# Add to fileset
-add_files -fileset sources_1 -norecurse $xci_path
-
-# Upgrade IP
-upgrade_ip [get_ips -all fifo_48in24out_1024depth]
-
-# Synthesis OOC synthesis target and generate run
-generate_target synthesis $xci_path
-create_ip_run            $xci_path
-
-# Run FIFO
-launch_runs  [get_runs fifo_48in24out_1024depth_synth_1]
-wait_on_run  [get_runs fifo_48in24out_1024depth_synth_1]
-
-update_compile_order -fileset sources_1
+import_ip target/disp_ip/src/fifo_48in24out_1024depth/fifo_48in24out_1024depth.xci
+update_ip_catalog
 
 # --- Run Block Design script ---------------------------
 set design_tcl [file join $scripts_dir "sim_display.tcl"]
