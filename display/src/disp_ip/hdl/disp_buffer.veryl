@@ -5,7 +5,7 @@ pub module disp_buffer (
 
     // Display Clock, Reset
     DCLK: input '_ default clock,
-    DRST: input '_ reset        ,
+    DRST: input '_ default reset,
 
     // FIFO
     DISPON    : input  logic    ,
@@ -23,23 +23,41 @@ pub module disp_buffer (
     DSP_B : output logic<8>,
     DSP_DE: output logic   ,
 ) {
+    const BUF_MAX: logic<10> = 10'd768; // 1024 - 256
 
     var DSP_hpreDE   : logic    ;
     var write_counter: logic<10>;
     var pixel_data   : logic<24>;
-
-    assign BUF_WREADY = write_counter <: 10'd300;
+    var dout_valid   : logic    ;
 
     always_ff {
-        DSP_hpreDE = DSP_preDE;
-        DSP_DE     = DSP_hpreDE;
+        if_reset {
+            DSP_hpreDE = 0;
+            DSP_DE     = 0;
+        } else {
+            DSP_hpreDE = DSP_preDE;
+            DSP_DE     = DSP_hpreDE;
+        }
     }
 
     always_ff {
-        DSP_R = pixel_data[23:16];
-        DSP_G = pixel_data[15:8];
-        DSP_B = pixel_data[7:0];
+        if_reset {
+            DSP_R = 8'h0;
+            DSP_G = 8'h0;
+            DSP_B = 8'h0;
+        } else if DISPON && DSP_hpreDE && dout_valid {
+            DSP_R = pixel_data[23:16];
+            DSP_G = pixel_data[15:8];
+            DSP_B = pixel_data[7:0];
+        } else {
+            DSP_R = 8'h0;
+            DSP_G = 8'h0;
+            DSP_B = 8'h0;
+        }
     }
+
+    // BUF_WREADY
+    assign BUF_WREADY = (write_counter[9:2] <: BUF_MAX[9:2]);
 
     // FIFO
     unsafe (cdc) {
@@ -54,7 +72,7 @@ pub module disp_buffer (
             full         : _                            ,
             overflow     : BUF_OVER                     ,
             empty        : _                            ,
-            valid        : _                            ,
+            valid        : dout_valid                   ,
             underflow    : BUF_UNDER                    ,
             wr_data_count: write_counter                ,
         );
