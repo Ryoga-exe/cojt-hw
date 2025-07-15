@@ -96,31 +96,31 @@ pub module disp_vramctrl (
         #[cond_type(unique)]
         case ar_state {
             ARState::idle: {
-                               if vrstart_rise && DISPON {
-                                   frame_active_next = 1'b1;
-                                   cur_addr_next     = 32'd0;
-                                   outstanding_next  = 0;
-                                   ar_state_next     = ARState::wait;
-                               }
-                           }
+                if vrstart_rise && DISPON {
+                    frame_active_next = 1'b1;
+                    cur_addr_next     = 32'd0;
+                    outstanding_next  = 0;
+                    ar_state_next     = ARState::wait;
+                }
+            }
             ARState::saddr: {
-                                ARVALID = 1'b1;
-                                if ARVALID && ARREADY {
-                                    outstanding_next = outstanding + 1;
-                                    cur_addr_next    = cur_addr + BURST_BYTES;
-                                    ar_state_next    = ARState::wait;
-                                    if cur_addr_next >= frame_bytes {
-                                        frame_active_next = 1'b0;
-                                    }
-                                }
-                            }
+                ARVALID = 1'b1;
+                if ARVALID && ARREADY {
+                    outstanding_next = outstanding + 1;
+                    cur_addr_next    = cur_addr + BURST_BYTES;
+                    ar_state_next    = ARState::wait;
+                    if cur_addr_next >= frame_bytes {
+                        frame_active_next = 1'b0;
+                    }
+                }
+            }
             ARState::wait: {
-                               if !frame_active {
-                                   ar_state_next = ARState::idle;
-                               } else if BUF_WREADY {
-                                   ar_state_next = ARState::saddr;
-                               }
-                           }
+                if !frame_active {
+                    ar_state_next = ARState::idle;
+                } else if BUF_WREADY {
+                    ar_state_next = ARState::saddr;
+                }
+            }
         }
     }
 
@@ -135,15 +135,15 @@ pub module disp_vramctrl (
         #[cond_type(unique)]
         case sr_state {
             SRState::wait: {
-                               if outstanding >: 0 {
-                                   sr_state_next = SRState::read;
-                               }
-                           }
+                if outstanding >: 0 {
+                    sr_state_next = SRState::read;
+                }
+            }
             SRState::read: {
-                               if outstanding == 0 {
-                                   sr_state_next = SRState::wait;
-                               }
-                           }
+                if outstanding == 0 {
+                    sr_state_next = SRState::wait;
+                }
+            }
         }
     }
 

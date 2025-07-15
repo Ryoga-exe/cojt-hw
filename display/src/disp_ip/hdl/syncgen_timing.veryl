@@ -109,53 +109,53 @@ pub module SyncgenTimingSel (
     always_comb {
         case mode {
             Mode::vga: {
-                           hsc = VgaTiming::hsc;
-                           hfp = VgaTiming::hfp;
-                           hpw = VgaTiming::hpw;
-                           hbp = VgaTiming::hbp;
-                           hdo = VgaTiming::hdo;
-                           vsc = VgaTiming::vsc;
-                           vfp = VgaTiming::vfp;
-                           vpw = VgaTiming::vpw;
-                           vbp = VgaTiming::vbp;
-                           vdo = VgaTiming::vdo;
-                       }
+                hsc = VgaTiming::hsc;
+                hfp = VgaTiming::hfp;
+                hpw = VgaTiming::hpw;
+                hbp = VgaTiming::hbp;
+                hdo = VgaTiming::hdo;
+                vsc = VgaTiming::vsc;
+                vfp = VgaTiming::vfp;
+                vpw = VgaTiming::vpw;
+                vbp = VgaTiming::vbp;
+                vdo = VgaTiming::vdo;
+            }
             Mode::xga: {
-                           hsc = XgaTiming::hsc;
-                           hfp = XgaTiming::hfp;
-                           hpw = XgaTiming::hpw;
-                           hbp = XgaTiming::hbp;
-                           hdo = XgaTiming::hdo;
-                           vsc = XgaTiming::vsc;
-                           vfp = XgaTiming::vfp;
-                           vpw = XgaTiming::vpw;
-                           vbp = XgaTiming::vbp;
-                           vdo = XgaTiming::vdo;
-                       }
+                hsc = XgaTiming::hsc;
+                hfp = XgaTiming::hfp;
+                hpw = XgaTiming::hpw;
+                hbp = XgaTiming::hbp;
+                hdo = XgaTiming::hdo;
+                vsc = XgaTiming::vsc;
+                vfp = XgaTiming::vfp;
+                vpw = XgaTiming::vpw;
+                vbp = XgaTiming::vbp;
+                vdo = XgaTiming::vdo;
+            }
             Mode::sxga: {
-                            hsc = SxgaTiming::hsc;
-                            hfp = SxgaTiming::hfp;
-                            hpw = SxgaTiming::hpw;
-                            hbp = SxgaTiming::hbp;
-                            hdo = SxgaTiming::hdo;
-                            vsc = SxgaTiming::vsc;
-                            vfp = SxgaTiming::vfp;
-                            vpw = SxgaTiming::vpw;
-                            vbp = SxgaTiming::vbp;
-                            vdo = SxgaTiming::vdo;
-                        }
+                hsc = SxgaTiming::hsc;
+                hfp = SxgaTiming::hfp;
+                hpw = SxgaTiming::hpw;
+                hbp = SxgaTiming::hbp;
+                hdo = SxgaTiming::hdo;
+                vsc = SxgaTiming::vsc;
+                vfp = SxgaTiming::vfp;
+                vpw = SxgaTiming::vpw;
+                vbp = SxgaTiming::vbp;
+                vdo = SxgaTiming::vdo;
+            }
             default: {
-                         hsc = VgaTiming::hsc;
-                         hfp = VgaTiming::hfp;
-                         hpw = VgaTiming::hpw;
-                         hbp = VgaTiming::hbp;
-                         hdo = VgaTiming::hdo;
-                         vsc = VgaTiming::vsc;
-                         vfp = VgaTiming::vfp;
-                         vpw = VgaTiming::vpw;
-                         vbp = VgaTiming::vbp;
-                         vdo = VgaTiming::vdo;
-                     }
+                hsc = VgaTiming::hsc;
+                hfp = VgaTiming::hfp;
+                hpw = VgaTiming::hpw;
+                hbp = VgaTiming::hbp;
+                hdo = VgaTiming::hdo;
+                vsc = VgaTiming::vsc;
+                vfp = VgaTiming::vfp;
+                vpw = VgaTiming::vpw;
+                vbp = VgaTiming::vbp;
+                vdo = VgaTiming::vdo;
+            }
         }
     }
 }
