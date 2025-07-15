@@ -9,4 +9,5 @@ doc/
 ### Vivado
 .Xil
 project
+simulation
 *.xpr
