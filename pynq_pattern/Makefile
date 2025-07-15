@@ -1,7 +1,7 @@
 VERYL = veryl
 VIVADO = vivado
 
-.PHONY: build project clean
+.PHONY: build project bitstream clean
 
 build:
 	$(VERYL) build
