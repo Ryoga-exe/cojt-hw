@@ -8,6 +8,7 @@ build:
 	mkdir -p target/disp_ip/src
 	mkdir -p target/disp_ip/xgui
 	mkdir -p target/disp_ip/hdl
+	cp src/disp_ip/component.xml target/disp_ip/
 	cp -a src/disp_ip/src/. target/disp_ip/src/
 	cp -a src/disp_ip/xgui/. target/disp_ip/xgui/
 	cp src/disp_ip/hdl/*.v target/disp_ip/hdl/
