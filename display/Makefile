@@ -1,7 +1,7 @@
 VERYL = veryl
 VIVADO = vivado
 
-.PHONY: build project clean
+.PHONY: build project simulation bitstream clean
 
 build:
 	$(VERYL) build
@@ -16,6 +16,9 @@ build:
 
 project:
 	$(VIVADO) -mode batch -source scripts/project.tcl -nolog -nojournal
+
+simulation:
+	$(VIVADO) -mode batch -source scripts/simulation.tcl -nolog -nojournal
 
 bitstream:
 	$(VIVADO) -mode batch -source scripts/generate_bitstream.tcl \
