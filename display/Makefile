@@ -18,7 +18,7 @@ project:
 
 bitstream:
 	$(VIVADO) -mode batch -source scripts/generate_bitstream.tcl \
-		-tclargs ./project/pynq_pattern.xpr 8 \
+		-tclargs ./project/pynq_display.xpr 8 \
 		-nolog -nojournal
 
 clean:
