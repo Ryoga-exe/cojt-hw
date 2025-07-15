@@ -10,8 +10,8 @@ set scripts_dir   [file dirname [info script]]
 create_project $project_name $project_dir -part $part -force
 
 # --- Add RTL Sources -----------------------------------
-add_files -fileset sources_1 [glob target/disp_ip/*.sv]
-add_files -fileset sources_1 target/disp_ip/display.v
+add_files -fileset sources_1 [glob target/disp_ip/hdl/*.sv]
+add_files -fileset sources_1 target/disp_ip/hdl/display.v
 update_compile_order -fileset sources_1
 
 # --- Add FIFO ------------------------------------------
