@@ -29,3 +29,4 @@ clean:
 	$(VERYL) clean
 	rm -rf target
 	rm -rf project .Xil *.jou *.log
+	rm -rf simulation
