@@ -48,123 +48,155 @@ pub module disp_vramctrl (
         vdo        ,
     );
 
-    const BURST_BYTES    : u32 = 256; // 32beat * 64bit
-    const BYTES_PER_PIXEL: u32 = 4;
-
-    let frame_bytes: logic<32> = hdo * vdo * BYTES_PER_PIXEL;
-
-    var vrstart_d1  : logic;
-    var vrstart_rise: logic;
-    always_ff {
-        vrstart_d1 = VRSTART;
-    }
-    assign vrstart_rise = VRSTART & ~vrstart_d1;
-
-    enum ARState {
-        idle,
-        saddr,
-        wait,
-    }
-    enum SRState {
-        wait,
-        read,
-    }
-
-    var ar_state     : ARState;
-    var ar_state_next: ARState;
-
-    // address offset
-    var cur_addr     : logic<32>;
-    var cur_addr_next: logic<32>;
-
-    var frame_active     : logic;
-    var frame_active_next: logic;
-
-    var outstanding     : u32;
-    var outstanding_next: u32;
-
-    // Address FSM
-    always_comb {
-        ar_state_next     = ar_state;
-        cur_addr_next     = cur_addr;
-        frame_active_next = frame_active;
-        outstanding_next  = outstanding;
-
-        ARADDR  = DISPADDR + cur_addr;
-        ARVALID = 1'b0;
-
-        #[cond_type(unique)]
-        case ar_state {
-            ARState::idle: {
-                if vrstart_rise && DISPON {
-                    frame_active_next = 1'b1;
-                    cur_addr_next     = 32'd0;
-                    outstanding_next  = 0;
-                    ar_state_next     = ARState::wait;
-                }
-            }
-            ARState::saddr: {
-                ARVALID = 1'b1;
-                if ARVALID && ARREADY {
-                    outstanding_next = outstanding + 1;
-                    cur_addr_next    = cur_addr + BURST_BYTES;
-                    ar_state_next    = ARState::wait;
-                    if cur_addr_next >= frame_bytes {
-                        frame_active_next = 1'b0;
-                    }
-                }
-            }
-            ARState::wait: {
-                if !frame_active {
-                    ar_state_next = ARState::idle;
-                } else if BUF_WREADY {
-                    ar_state_next = ARState::saddr;
-                }
-            }
-        }
-    }
-
-    var sr_state     : SRState;
-    var sr_state_next: SRState;
-
-    // Data FSM
-    always_comb {
-        sr_state_next = sr_state;
-        RREADY        = (sr_state == SRState::read);
-
-        #[cond_type(unique)]
-        case sr_state {
-            SRState::wait: {
-                if outstanding >: 0 {
-                    sr_state_next = SRState::read;
-                }
-            }
-            SRState::read: {
-                if outstanding == 0 {
-                    sr_state_next = SRState::wait;
-                }
-            }
-        }
-    }
-
-    let plus_ar: logic = (ar_state == ARState::saddr) && ARVALID && ARREADY;
-    let minus_r: logic = (sr_state == SRState::read) && RVALID && RLAST && RREADY;
-
-    // Update registers
+    // Synchronize VRSTART
+    var VRSTART_sync: logic<2>;
     always_ff {
         if_reset {
-            ar_state     = ARState::idle;
-            sr_state     = SRState::wait;
-            cur_addr     = 32'd0;
-            outstanding  = 0;
-            frame_active = 1'b0;
+            VRSTART_sync = 0;
         } else {
-            ar_state     = ar_state_next;
-            sr_state     = sr_state_next;
-            cur_addr     = cur_addr_next;
-            frame_active = frame_active_next;
-            // outstanding counter
-            outstanding = (outstanding + (if plus_ar ? 1 : 0) - (if minus_r ? 1 : 0));
+            VRSTART_sync = {VRSTART_sync[0], VRSTART};
+        }
+    }
+
+    enum State {
+        idle,
+        saddr,
+        haddr,
+        sread,
+        reading,
+        wait,
+    }
+
+    var state     : State;
+    var state_next: State;
+
+    // address offset
+    var cur_addr: logic<32>;
+
+    var last_dot: logic;
+
+    always_ff {
+        if_reset {
+            state = State::idle;
+        } else {
+            state = state_next;
+        }
+    }
+
+    // state_next
+    always_comb {
+        #[cond_type(unique)]
+        case state {
+            State::idle: {
+                state_next = if VRSTART_sync[1] && last_dot == 1'b0 && DISPON ? State::saddr : state;
+            }
+            State::saddr: {
+                state_next = if ARREADY ? State::sread : State::haddr;
+            }
+            State::haddr: {
+                state_next = if ARREADY ? State::sread : state;
+            }
+            State::sread: {
+                if RVALID && RLAST {
+                    if last_dot {
+                        state_next = State::idle;
+                    } else if BUF_WREADY {
+                        state_next = State::saddr;
+                    } else {
+                        state_next = State::wait;
+                    }
+                } else {
+                    state_next = State::reading;
+                }
+            }
+            State::reading: {
+                if RVALID && RLAST {
+                    if last_dot || VRSTART_sync[1] == 1'b0 {
+                        state_next = State::idle;
+                    } else if BUF_WREADY {
+                        state_next = State::saddr;
+                    } else {
+                        state_next = State::wait;
+                    }
+                } else {
+                    state_next = state;
+                }
+            }
+            State::wait: {
+                state_next = if BUF_WREADY ? State::saddr : state;
+            }
+            default: {
+                state_next = state;
+            }
+        }
+    }
+
+    // ARADDR
+    always_ff {
+        if_reset {
+            ARADDR = 0;
+        } else {
+            ARADDR = case state_next {
+                State::idle   : DISPADDR,
+                State::reading: cur_addr,
+                default       : ARADDR,
+            };
+        }
+    }
+
+    // ARVALID
+    always_ff {
+        if_reset {
+            ARVALID = 1'b0;
+        } else {
+            ARVALID = case state_next {
+                State::saddr: 1'b1,
+                State::sread: 1'b0,
+                default     : ARVALID,
+            };
+        }
+    }
+
+    // RREADY
+    always_ff {
+        if_reset {
+            RREADY = 1'b0;
+        } else {
+            RREADY = case state_next {
+                State::saddr: 1'b0,
+                State::wait : 1'b0,
+                State::sread: 1'b1,
+                default     : RREADY,
+            };
+        }
+    }
+
+    // cur_addr
+    always_ff {
+        if_reset {
+            cur_addr = 0;
+        } else {
+            cur_addr = case state_next {
+                State::idle : DISPADDR,
+                State::saddr: cur_addr + 32'h40,
+                default     : cur_addr,
+            };
+        }
+    }
+
+    // last_dot
+    always_ff {
+        if_reset {
+            last_dot = 1'b0;
+        } else {
+            if VRSTART_sync[1] == 1'b0 {
+                last_dot = 1'b0;
+            } else if state == State::reading && RVALID && RREADY && RLAST {
+                let frame_bytes: logic<32> = (hdo * vdo) << 1;
+                if cur_addr >= (DISPADDR + frame_bytes - 32'h40) {
+                    last_dot = 1'b1;
+                }
+            }
         }
     }
 }
