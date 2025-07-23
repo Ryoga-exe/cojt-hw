@@ -1,10 +1,11 @@
+/// Display Register Controller
 module disp_regctrl (
     // System Signals
-    ACLK: input clock,
-    ARST: input reset,
+    ACLK: input clock, /// AXI side clock
+    ARST: input reset, /// AXI side reset
 
     // VSYNC
-    DSP_VSYNC_X: input logic,
+    DSP_VSYNC_X: input logic, /// VSYNC from syncgen
 
     // Register bus
     WRADDR: input  logic<16>,
@@ -24,45 +25,121 @@ module disp_regctrl (
     BUF_UNDER: input  logic,
     BUF_OVER : input  logic,
 ) {
-    assign DSP_IRQ = 1'b0;
+    const WIDX_W: u32 = 10;
 
-    let write_reg : logic = WREN && WRADDR[15:12] == 4'h0;
-    let ctrlreg_wr: logic = (write_reg && WRADDR[11:2] == 10'h001 && BYTEEN[0]);
+    let wr_idx: logic<WIDX_W> = WRADDR[11:2];
+    let rd_idx: logic<WIDX_W> = RDADDR[11:2];
 
-    // DISPADDR
+    const IDX_DISPADDR: logic<WIDX_W> = 10'h000; // 0x0000
+    const IDX_DISPCTRL: logic<WIDX_W> = 10'h001; // 0x0004
+    const IDX_DISPINT : logic<WIDX_W> = 10'h002; // 0x0008
+    const IDX_DISPFIFO: logic<WIDX_W> = 10'h003; // 0x000C
+
+    // DISPCTRL bits
+    const B_DISPON: u8 = 0;
+    const B_VBLANK: u8 = 1;
+
+    // DISPINT bits
+    const B_INT_EN : u8 = 0;
+    const B_INT_CLR: u8 = 1;
+
+    // DISPFIFO bits
+    const B_UF_FLG: u8 = 0;
+    const B_OF_FLG: u8 = 1;
+
+    // Registers
+    var reg_dispaddr: logic<32>;
+    var reg_dispctrl: logic<32>;
+    var reg_dispint : logic<32>;
+    var reg_dispfifo: logic<32>;
+    var read_data   : logic<32>;
+    var irq_pending : bit      ;
+
+    // VSYNC fall
+    var vsync_prev: logic;
+    always_ff {
+        vsync_prev = DSP_VSYNC_X;
+    }
+    let vsync_negedge: logic = vsync_prev & ~DSP_VSYNC_X;
+
+    // Write decode
+    let wr_hit: logic = WREN && WRADDR[15:12] == 4'h0;
+    let rd_hit: logic = RDEN && RDADDR[15:12] == 4'h0;
+    let wr32  : logic = wr_hit && &BYTEEN;
+
+    // Write register
     always_ff {
         if_reset {
-            DISPADDR = 32'h0;
-        } else if write_reg {
-            if WRADDR[11:2] == 10'h000 {
-                switch {
-                    BYTEEN[0]: DISPADDR[7:0]   = WDATA[7:0];
-                    BYTEEN[1]: DISPADDR[15:8]  = WDATA[15:8];
-                    BYTEEN[2]: DISPADDR[23:16] = WDATA[23:16];
-                    BYTEEN[3]: DISPADDR[31:24] = WDATA[31:24];
+            reg_dispaddr = '0;
+            reg_dispctrl = '0;
+            reg_dispint  = '0;
+            reg_dispfifo = '0;
+            irq_pending  = 1'b0;
+        } else {
+            // DISPADDR
+            if wr32 && wr_idx == IDX_DISPADDR {
+                reg_dispaddr = WDATA;
+            }
+
+            // DISPCTRL
+            if vsync_negedge {
+                reg_dispctrl[B_VBLANK] = 1'b1;
+            }
+
+            if wr_hit && wr_idx == IDX_DISPCTRL && BYTEEN[0] {
+                reg_dispctrl[B_DISPON] = WDATA[B_DISPON];
+                if WDATA[B_VBLANK] {
+                    reg_dispctrl[B_VBLANK] = 1'b0;
+                }
+            }
+
+            // DISPINT
+            if wr_hit && wr_idx == IDX_DISPINT && BYTEEN[0] {
+                reg_dispint[B_INT_EN] = WDATA[B_INT_EN];
+                if WDATA[B_INT_CLR] {
+                    irq_pending = 1'b0;
+                }
+            }
+
+            // IRQ happens
+            if reg_dispint[B_INT_EN] && vsync_negedge {
+                irq_pending = 1'b1;
+            }
+
+            // DISPFIFO
+            if BUF_UNDER {
+                reg_dispfifo[B_UF_FLG] = 1'b1;
+            }
+            if BUF_OVER {
+                reg_dispfifo[B_OF_FLG] = 1'b1;
+            }
+            if wr_hit && wr_idx == IDX_DISPFIFO && BYTEEN[0] {
+                if WDATA[B_UF_FLG] {
+                    reg_dispfifo[B_UF_FLG] = 1'b0;
+                }
+                if WDATA[B_OF_FLG] {
+                    reg_dispfifo[B_OF_FLG] = 1'b0;
                 }
             }
         }
     }
 
-    // DISPCTRL (DISPON)
-    always_ff {
-        if_reset {
-            DISPON = 1'b0;
-        } else if ctrlreg_wr {
-            DISPON = WDATA[0];
+    // Read register
+    always_comb {
+        read_data = 32'h0;
+        if rd_hit {
+            read_data = case (rd_idx) {
+                IDX_DISPADDR: reg_dispaddr,
+                IDX_DISPCTRL: reg_dispctrl,
+                IDX_DISPINT : reg_dispint,
+                IDX_DISPFIFO: reg_dispfifo,
+                default     : 32'hDEAD_BEEF,
+            };
         }
     }
 
-    // Read register
-    // FIXME: correct RDATA
-    always_comb {
-        RDATA = case (RDADDR[11:2]) {
-            10'h000: DISPADDR[31:0],
-            10'h001: 32'h0, // DISPCTRLレジスタのリード値を記述
-            10'h002: 32'h0, // DISPINTレジスタのリード値を記述
-            10'h003: 32'h0, // DISPFIFOレジスタのリード値を記述
-            default: 32'h0, //
-        };
-    }
+    assign RDATA    = read_data;
+    assign DISPADDR = reg_dispaddr;
+    assign DISPON   = reg_dispctrl[B_DISPON];
+    assign DSP_IRQ  = irq_pending;
 }
