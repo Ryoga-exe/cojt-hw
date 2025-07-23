@@ -4,10 +4,10 @@ VIVADO = vivado
 ifeq ($(OS),Windows_NT)
 	# required bmatzelle.Gow
   MKDIR := mkdir.exe
-	COPY := cp.exe
+	CP := cp.exe
 else
   MKDIR := mkdir
-	CP := CP
+	CP := cp
 endif
 
 .PHONY: build project simulation bitstream clean
