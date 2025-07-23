@@ -59,16 +59,13 @@ pub module disp_buffer (
     // assign BUF_WREADY = (fifo_wr_count[9:2] <: BUF_MAX[9:2]);
 
     // 1clk after, fifo_valid and fifo_rdata comes
-    var valid_d0: logic    ;
     var pixel_d0: logic<24>;
     var pixel_d1: logic<24>;
     always_ff {
         if_reset {
-            valid_d0 = 1'b0;
             pixel_d0 = 24'h0;
             pixel_d1 = 24'h0;
         } else {
-            valid_d0 = fifo_valid;
             pixel_d0 = pixel_data;
             pixel_d1 = pixel_d0;
         }
@@ -86,6 +83,6 @@ pub module disp_buffer (
     assign DSP_DE = de_pipe[2];
 
     // Output
-    let pixel_valid: logic = DSP_DE & valid_d0;
+    let pixel_valid: logic = DSP_DE & fifo_valid;
     assign {DSP_R, DSP_G, DSP_B} = if pixel_valid ? pixel_d1 : 24'h0;
 }
