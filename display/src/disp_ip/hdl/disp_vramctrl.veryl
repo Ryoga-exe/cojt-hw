@@ -53,12 +53,21 @@ pub module disp_vramctrl (
 
     let frame_bytes: logic<32> = hdo * vdo * BYTES_PER_PIXEL;
 
-    var vrstart_d1  : logic;
+    // Sync VRSTART
+    var vrstart_meta: logic;
+    var vrstart_sync: logic;
     var vrstart_rise: logic;
+
     always_ff {
-        vrstart_d1 = VRSTART;
+        if_reset {
+            vrstart_meta = 0'b0;
+            vrstart_sync = 0'b0;
+        } else {
+            vrstart_meta = VRSTART;
+            vrstart_sync = vrstart_meta;
+        }
     }
-    assign vrstart_rise = VRSTART & ~vrstart_d1;
+    assign vrstart_rise = VRSTART & ~vrstart_sync;
 
     enum ARState {
         idle,
