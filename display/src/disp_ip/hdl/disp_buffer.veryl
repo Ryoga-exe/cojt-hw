@@ -86,7 +86,6 @@ pub module disp_buffer (
     assign DSP_DE = de_pipe[2];
 
     // Output
-    assign DSP_R = pixel_d1[23:16];
-    assign DSP_G = pixel_d1[15:8];
-    assign DSP_B = pixel_d1[7:0];
+    let pixel_valid: logic = DSP_DE & valid_d0;
+    assign {DSP_R, DSP_G, DSP_B} = if pixel_valid ? pixel_d1 : 24'h0;
 }
