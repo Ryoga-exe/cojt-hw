@@ -1,13 +1,20 @@
 VERYL = veryl
 VIVADO = vivado
 
+ifeq ($(OS),Windows_NT)
+	# required bmatzelle.Gow
+  MKDIR := mkdir.exe
+else
+  MKDIR := mkdir
+endif
+
 .PHONY: build project simulation bitstream clean
 
 build:
 	$(VERYL) build
-	mkdir -p target/disp_ip/src
-	mkdir -p target/disp_ip/xgui
-	mkdir -p target/disp_ip/hdl
+	$(MKDIR) -p target/disp_ip/src
+	$(MKDIR) -p target/disp_ip/xgui
+	$(MKDIR) -p target/disp_ip/hdl
 	cp src/disp_ip/component.xml target/disp_ip/
 	cp -a src/disp_ip/src/. target/disp_ip/src/
 	cp -a src/disp_ip/xgui/. target/disp_ip/xgui/
