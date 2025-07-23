@@ -74,16 +74,16 @@ pub module disp_buffer (
         }
     }
 
-    // DSP_DE: 2clk delayed DSP_preDE
-    var de_pipe: logic<2>;
+    // DSP_DE: 3clk delayed DSP_preDE
+    var de_pipe: logic<3>;
     always_ff {
         if_reset {
-            de_pipe = 2'b00;
+            de_pipe = 3'b0;
         } else {
-            de_pipe = {de_pipe[0], DSP_preDE & DISPON};
+            de_pipe = {de_pipe[1:0], DSP_preDE & DISPON};
         }
     }
-    assign DSP_DE = de_pipe[1];
+    assign DSP_DE = de_pipe[2];
 
     // Output
     assign DSP_R = pixel_d1[23:16];
