@@ -6,7 +6,7 @@
 import axi_vip_pkg::*;
 import design_1_axi_vip_0_0_pkg::*;
 
-module tb_disp1;
+module tb_disp1_rbg;
 
   // constants
   localparam integer STEP = 8;
