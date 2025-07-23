@@ -48,7 +48,7 @@ pub module disp_vramctrl (
         vdo        ,
     );
 
-    const BURST_BYTES    : u32 = 64; // 32beat * 64bit
+    const BURST_BYTES    : u32 = 64; // 8beat * 64bit
     const BYTES_PER_PIXEL: u32 = 4;
 
     let frame_bytes: logic<32> = hdo * vdo * BYTES_PER_PIXEL;
