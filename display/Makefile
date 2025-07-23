@@ -4,8 +4,10 @@ VIVADO = vivado
 ifeq ($(OS),Windows_NT)
 	# required bmatzelle.Gow
   MKDIR := mkdir.exe
+	COPY := cp.exe
 else
   MKDIR := mkdir
+	CP := CP
 endif
 
 .PHONY: build project simulation bitstream clean
@@ -15,11 +17,11 @@ build:
 	$(MKDIR) -p target/disp_ip/src
 	$(MKDIR) -p target/disp_ip/xgui
 	$(MKDIR) -p target/disp_ip/hdl
-	cp src/disp_ip/component.xml target/disp_ip/
-	cp -a src/disp_ip/src/. target/disp_ip/src/
-	cp -a src/disp_ip/xgui/. target/disp_ip/xgui/
-	cp src/disp_ip/hdl/*.v target/disp_ip/hdl/
-	cp src/disp_ip/hdl/*.sv target/disp_ip/hdl/
+	$(CP) src/disp_ip/component.xml target/disp_ip/
+	$(CP) -a src/disp_ip/src/. target/disp_ip/src/
+	$(CP) -a src/disp_ip/xgui/. target/disp_ip/xgui/
+	$(CP) src/disp_ip/hdl/*.v target/disp_ip/hdl/
+	$(CP) src/disp_ip/hdl/*.sv target/disp_ip/hdl/
 
 project:
 	$(VIVADO) -mode batch -source scripts/project.tcl -nolog -nojournal
