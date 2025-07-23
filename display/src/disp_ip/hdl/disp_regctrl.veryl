@@ -1,0 +1,68 @@
+module disp_regctrl (
+    // System Signals
+    ACLK: input clock,
+    ARST: input reset,
+
+    // VSYNC
+    DSP_VSYNC_X: input logic,
+
+    // Register bus
+    WRADDR: input  logic<16>,
+    BYTEEN: input  logic<4> ,
+    WREN  : input  logic    ,
+    WDATA : input  logic<32>,
+    RDADDR: input  logic<16>,
+    RDEN  : input  logic    ,
+    RDATA : output logic<32>,
+
+    // Register output
+    DISPON  : output logic    ,
+    DISPADDR: output logic<32>,
+
+    // Interrupt, FIFO flag
+    DSP_IRQ  : output logic,
+    BUF_UNDER: input  logic,
+    BUF_OVER : input  logic,
+) {
+    assign DSP_IRQ = 1'b0;
+
+    let write_reg : logic = WREN && WRADDR[15:12] == 4'h0;
+    let ctrlreg_wr: logic = (write_reg && WRADDR[11:2] == 10'h001 && BYTEEN[0]);
+
+    // DISPADDR
+    always_ff {
+        if_reset {
+            DISPADDR = 32'h0;
+        } else if write_reg {
+            if WRADDR[11:2] == 10'h000 {
+                switch {
+                    BYTEEN[0]: DISPADDR[7:0]   = WDATA[7:0];
+                    BYTEEN[1]: DISPADDR[15:8]  = WDATA[15:8];
+                    BYTEEN[2]: DISPADDR[23:16] = WDATA[23:16];
+                    BYTEEN[3]: DISPADDR[31:24] = WDATA[31:24];
+                }
+            }
+        }
+    }
+
+    // DISPCTRL (DISPON)
+    always_ff {
+        if_reset {
+            DISPON = 1'b0;
+        } else if ctrlreg_wr {
+            DISPON = WDATA[0];
+        }
+    }
+
+    // Read register
+    // FIXME: correct RDATA
+    always_comb {
+        RDATA = case (RDADDR[11:2]) {
+            10'h000: DISPADDR[31:0],
+            10'h001: 32'h0, // DISPCTRLレジスタのリード値を記述
+            10'h002: 32'h0, // DISPINTレジスタのリード値を記述
+            10'h003: 32'h0, // DISPFIFOレジスタのリード値を記述
+            default: 32'h0, //
+        };
+    }
+}
