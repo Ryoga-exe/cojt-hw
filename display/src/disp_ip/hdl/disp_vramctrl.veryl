@@ -48,123 +48,115 @@ pub module disp_vramctrl (
         vdo        ,
     );
 
-    const BURST_BYTES    : u32 = 256; // 32beat * 64bit
-    const BYTES_PER_PIXEL: u32 = 4;
-
-    let frame_bytes: logic<32> = hdo * vdo * BYTES_PER_PIXEL;
-
-    var vrstart_d1  : logic;
-    var vrstart_rise: logic;
+    // Sync VRSTART
+    var vr_meta: logic;
+    var vr_sync: logic;
+    var vr_prev: logic;
     always_ff {
-        vrstart_d1 = VRSTART;
+        if_reset {
+            vr_meta = 0'b0;
+            vr_sync = 0'b0;
+            vr_prev = 0'b0;
+        } else {
+            vr_meta = VRSTART;
+            vr_sync = vr_meta;
+            vr_prev = vr_sync;
+        }
     }
-    assign vrstart_rise = VRSTART & ~vrstart_d1;
+    let vr_posedge: logic = vr_sync & ~vr_prev; // rise time
 
-    enum ARState {
+    // frame length (words)
+    let words_in_frame: logic<32> = (hdo * vdo) >> 1; // width * height * 4 / 8 (8byte/word)
+    const ADDR_INCR     : logic<32> = 32'd8;
+
+    // Latch when VRSTART rise
+    var frame_len: logic<32>;
+    always_ff {
+        if_reset {
+            frame_len = 32'd0;
+        } else if vr_posedge {
+            frame_len = words_in_frame;
+        }
+    }
+
+    // AXI Read Address FSM
+    enum State {
         idle,
-        saddr,
+        addr,
         wait,
     }
-    enum SRState {
-        wait,
-        read,
-    }
+    var cur_state: State;
+    var nxt_state: State;
 
-    var ar_state     : ARState;
-    var ar_state_next: ARState;
+    var araddr_reg: logic<32>;
+    var word_cnt  : logic<32>;
 
-    // address offset
-    var cur_addr     : logic<32>;
-    var cur_addr_next: logic<32>;
-
-    var frame_active     : logic;
-    var frame_active_next: logic;
-
-    var outstanding     : u32;
-    var outstanding_next: u32;
-
-    // Address FSM
+    // FSM: next state
     always_comb {
-        ar_state_next     = ar_state;
-        cur_addr_next     = cur_addr;
-        frame_active_next = frame_active;
-        outstanding_next  = outstanding;
-
-        ARADDR  = DISPADDR + cur_addr;
-        ARVALID = 1'b0;
-
+        nxt_state = cur_state;
         #[cond_type(unique)]
-        case ar_state {
-            ARState::idle: {
-                if vrstart_rise && DISPON {
-                    frame_active_next = 1'b1;
-                    cur_addr_next     = 32'd0;
-                    outstanding_next  = 0;
-                    ar_state_next     = ARState::wait;
+        case cur_state {
+            State::idle: {
+                if vr_posedge & DISPON {
+                    nxt_state = State::addr;
                 }
             }
-            ARState::saddr: {
-                ARVALID = 1'b1;
-                if ARVALID && ARREADY {
-                    outstanding_next = outstanding + 1;
-                    cur_addr_next    = cur_addr + BURST_BYTES;
-                    ar_state_next    = ARState::wait;
-                    if cur_addr_next >= frame_bytes {
-                        frame_active_next = 1'b0;
+            State::addr: {
+                if ~BUF_WREADY {
+                    nxt_state = State::wait;
+                } else if (word_cnt == frame_len) && (ARVALID && ARREADY) {
+                    nxt_state = State::idle;
+                }
+            }
+            State::wait: {
+                if BUF_WREADY {
+                    nxt_state = State::addr;
+                }
+            }
+        }
+    }
+
+    // FSM: update state, output
+    always_ff {
+        if_reset {
+            cur_state  = State::idle;
+            ARVALID    = 1'b0;
+            ARADDR     = 32'h0;
+            araddr_reg = 32'h0;
+            word_cnt   = 32'd0;
+        } else {
+            cur_state = nxt_state;
+
+            case cur_state {
+                State::idle: {
+                    ARVALID  = 1'b0;
+                    word_cnt = 32'd0;
+                    if nxt_state == State::addr {
+                        ARADDR   = DISPADDR;
+                        ARVALID  = 1'b1;
+                        word_cnt = 32'd1;
+                    }
+                }
+                State::addr: {
+                    if ~BUF_WREADY {
+                        ARVALID = 1'b0;
+                    } else if ARVALID && ARREADY {
+                        if word_cnt <: frame_len {
+                            ARADDR   += ADDR_INCR;
+                            word_cnt += 1;
+                        } else {
+                            ARVALID = 1'b0;
+                        }
+                    }
+                }
+                State::wait: {
+                    if BUF_WREADY {
+                        ARVALID = 1'b1;
                     }
                 }
             }
-            ARState::wait: {
-                if !frame_active {
-                    ar_state_next = ARState::idle;
-                } else if BUF_WREADY {
-                    ar_state_next = ARState::saddr;
-                }
-            }
         }
     }
 
-    var sr_state     : SRState;
-    var sr_state_next: SRState;
-
-    // Data FSM
-    always_comb {
-        sr_state_next = sr_state;
-        RREADY        = (sr_state == SRState::read);
-
-        #[cond_type(unique)]
-        case sr_state {
-            SRState::wait: {
-                if outstanding >: 0 {
-                    sr_state_next = SRState::read;
-                }
-            }
-            SRState::read: {
-                if outstanding == 0 {
-                    sr_state_next = SRState::wait;
-                }
-            }
-        }
-    }
-
-    let plus_ar: logic = (ar_state == ARState::saddr) && ARVALID && ARREADY;
-    let minus_r: logic = (sr_state == SRState::read) && RVALID && RLAST && RREADY;
-
-    // Update registers
-    always_ff {
-        if_reset {
-            ar_state     = ARState::idle;
-            sr_state     = SRState::wait;
-            cur_addr     = 32'd0;
-            outstanding  = 0;
-            frame_active = 1'b0;
-        } else {
-            ar_state     = ar_state_next;
-            sr_state     = sr_state_next;
-            cur_addr     = cur_addr_next;
-            frame_active = frame_active_next;
-            // outstanding counter
-            outstanding = (outstanding + (if plus_ar ? 1 : 0) - (if minus_r ? 1 : 0));
-        }
-    }
+    assign RREADY = 1'b1;
 }
