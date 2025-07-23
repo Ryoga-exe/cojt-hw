@@ -21,7 +21,7 @@ module tb_disp1;
 
   // change pixel number and file sources depends on the resolution
   localparam PIX_NUMBER   = (SIM_RESOL == P_RESOL_VGA) ? 640*480: (SIM_RESOL == P_RESOL_XGA) ? 1024*768: 1280*1024;
-  localparam PIC_FILENAME = "test_rgb_pattern.bin"
+  localparam PIC_FILENAME = "test_rgb_pattern.bin";
 
   // image signals
   logic       ACLK;
