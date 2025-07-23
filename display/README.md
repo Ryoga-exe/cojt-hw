@@ -2,7 +2,7 @@
 
 [筑波大学情報学群組み込み技術キャンパスOJT (COJT) ハードウェアコース](https://www.cojt.or.jp/tkb/curriculum/index.html#b) 表示回路
 
-Hardware display subsystem for [University of Tsukuba COJT Embedded Systems OJT Hardware Course](https://www.cojt.or.jp/tkb/curriculum/index.html#b) built with Veryl and targeting Xilinx FPGAs.
+Hardware display subsystem for [University of Tsukuba COJT Embedded Systems OJT Hardware Course](https://www.cojt.or.jp/tkb/curriculum/index.html#b) built with Veryl and targeting Ultra96V2.
 
 ## Prerequisites
 
