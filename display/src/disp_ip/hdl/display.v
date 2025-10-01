@@ -121,7 +121,7 @@ module display #(
 
   // Read Address (AR)
   assign M_AXI_ARID    = 'b0;
-  assign M_AXI_ARLEN   = 8'd07; // burst length (8 words)
+  assign M_AXI_ARLEN   = 8'd15; // burst length (16 words)
   assign M_AXI_ARSIZE  = 3'b011; // data length (8 byte/beat) (64bit)
   assign M_AXI_ARBURST = 2'b01; // INCR
   assign M_AXI_ARLOCK  = 1'b0;

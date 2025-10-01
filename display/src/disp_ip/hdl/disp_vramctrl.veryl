@@ -48,21 +48,24 @@ pub module disp_vramctrl (
         vdo        ,
     );
 
-    const BURST_BYTES    : u32 = 64; // 8beat * 64bit
+    const BURST_BYTES    : u32 = 128; // 32beat * 64bit
     const BYTES_PER_PIXEL: u32 = 4;
 
     let frame_bytes: logic<32> = hdo * vdo * BYTES_PER_PIXEL;
 
     // Sync VRSTART
-    var vrstart_sync: logic;
+    var vrstart_sync_d1: logic;
+    var vrstart_sync_d2: logic;
     always_ff {
         if_reset {
-            vrstart_sync = 0'b0;
+            vrstart_sync_d1 = 0'b0;
+            vrstart_sync_d2 = 0'b0;
         } else {
-            vrstart_sync = VRSTART;
+            vrstart_sync_d1 = VRSTART;
+            vrstart_sync_d2 = vrstart_sync_d1;
         }
     }
-    let vrstart_rise: logic = VRSTART & ~vrstart_sync;
+    let vrstart_rise: logic = vrstart_sync_d1 & ~vrstart_sync_d2;
 
     enum ARState {
         idle,

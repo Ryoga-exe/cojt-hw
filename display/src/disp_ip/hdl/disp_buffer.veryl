@@ -25,7 +25,7 @@ pub module disp_buffer (
     DSP_B : output logic<8>,
     DSP_DE: output logic   ,
 ) {
-    const BUF_MAX: logic<10> = 10'd768; // 1024 - 256
+    const BUF_MAX: logic<10> = 10'd752; // 1024 - 256 - 16
 
     let fifo_wdata   : logic<48> = {FIFOIN[23:0], FIFOIN[55:32]};
     let fifo_wr_en   : logic     = FIFOWR & DISPON;
