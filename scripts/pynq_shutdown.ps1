@@ -3,6 +3,6 @@ $port.Open()
 Start-Sleep -Milliseconds 500           # wait prompt
 $port.WriteLine('sudo shutdown -h now')
 Start-Sleep -Milliseconds 300           # wait prompt
-$port.WriteLine('xxxx')
+$port.WriteLine('xilinx')
 Start-Sleep 1
 $port.Close()
