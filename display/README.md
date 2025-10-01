@@ -29,7 +29,7 @@ make project
 
 ## Create a simulation project
 
-```
+```shell
 make simulation
 
 # Open GUI if desired:
@@ -40,7 +40,7 @@ make simulation
 
 Runs synthesis and implementation
 
-```
+```shell
 make bitstream
 ```
 
@@ -48,6 +48,6 @@ NOTE: do this after `make project`
 
 ## Cleaning up
 
-```
+```shell
 make clean
 ```
