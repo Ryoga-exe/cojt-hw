@@ -1,0 +1,15 @@
+### Veryl
+.build/
+dependencies/
+target/
+wave/
+doc/
+*.f
+
+### Vivado
+.Xil
+project
+simulation
+*.xpr
+*.jou
+*.log
