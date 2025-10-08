@@ -1,2 +1,4 @@
 scripts/pynq_display.tcl linguist-generated=true
 scripts/sim_display.tcl  linguist-generated=true
+src/disp_ip/src          linguist-generated=true
+src/disp_ip/xgui         linguist-generated=true
