@@ -1,2 +1,4 @@
 scripts/pynq_filter.tcl linguist-generated=true
 scripts/sim_filter.tcl  linguist-generated=true
+src/filt_ip/src         linguist-generated=true
+src/filt_ip/xgui        linguist-generated=true
