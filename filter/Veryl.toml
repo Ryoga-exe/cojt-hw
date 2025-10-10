@@ -4,7 +4,7 @@ version = "0.1.0"
 repository = "https://github.com/Ryoga-exe/cojt-hw/tree/main/filter"
 
 [build]
-source = "src"
+sources = ["src"]
 target = { type = "directory", path = "target" }
 clock_type = "posedge"
 reset_type = "sync_high"
@@ -16,4 +16,3 @@ sourcemap_target = { type = "directory", path = "target/sourcemap" }
 [test]
 waveform_target = { type = "directory", path = "wave" }
 waveform_format = "fst"
-
