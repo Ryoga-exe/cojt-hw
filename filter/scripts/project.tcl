@@ -12,6 +12,7 @@ create_project $project_name $project_dir -part $part -force
 # --- IP Registry ---------------------------------------
 set repo_list [list \
     [file normalize "../COMMON_IP"] \
+    [file normalize "../display/target/disp_ip"] \
     [file normalize "target/filt_ip"] \
 ]
 set cur_repo [get_property IP_REPO_PATHS [current_project]]
