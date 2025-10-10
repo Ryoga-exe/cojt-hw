@@ -1,0 +1,21 @@
+/// Filtering
+///
+/// - Apply filtering to input from the source FIFO.
+/// - Store the output data into the write FIFO.
+pub module flt_proc (
+    // System Signals
+    CLK : input clock,
+    ARST: input reset, // Reset by system
+    RSTS: input reset, // Reset by commands
+
+    // inputs
+    FLTRG_COLOR   : input logic<3> ,
+    FLTVC_SDATAVLD: input logic    ,
+    FLTVC_SDATA   : input logic<32>,
+
+    // outputs
+    FLTPC_WDATAVLD: output logic    ,
+    FLTPC_WDATA   : output logic<32>,
+) {
+    // TODO: implement
+}

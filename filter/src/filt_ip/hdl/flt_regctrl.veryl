@@ -1,0 +1,164 @@
+/// Register controller for filter circuit
+pub module flt_regctrl (
+    CLK : input clock,
+    ARST: input reset,
+
+    // Register bus
+    WRADDR: input  logic<16>,
+    BYTEEN: input  logic<4> ,
+    WREN  : input  logic    ,
+    WDATA : input  logic<32>,
+    RDADDR: input  logic<16>,
+    RDEN  : input  logic    ,
+    RDATA : output logic<32>,
+
+    // Interrupt
+    FLTVC_INT : input  logic,
+    FLTVC_BUSY: input  logic,
+    FLTRG_IRQ : output logic,
+
+    FLTRG_RSTS   : output logic    ,
+    FLTRG_START  : output logic    ,
+    FLTRG_VRAMSRC: output logic<32>,
+    FLTRG_VRAMFRM: output logic<32>,
+    FLTRG_COLOR  : output logic<3> ,
+) {
+    var reg_rsts: logic<4>;
+    var flt_ien : logic   ;
+
+    assign FLTRG_RSTS = (reg_rsts != 4'h0);
+
+    let write_reg: logic = WREN && WRADDR[15:12] == 4'h4;
+    let bWriteB0 : logic = (write_reg & BYTEEN[0]);
+    let bWriteB1 : logic = (write_reg & BYTEEN[1]);
+    let bWriteB2 : logic = (write_reg & BYTEEN[2]);
+    let bWriteB3 : logic = (write_reg & BYTEEN[3]);
+
+    // decode address
+    let bSelectReg00: logic = (WRADDR[11:2] == 10'h000);
+    // let bSelectReg04: logic = (WRADDR[11:2] == 10'h001);
+    let bSelectReg08: logic = (WRADDR[11:2] == 10'h002);
+    let bSelectReg0C: logic = (WRADDR[11:2] == 10'h003);
+    let bSelectReg10: logic = (WRADDR[11:2] == 10'h004);
+    let bSelectReg14: logic = (WRADDR[11:2] == 10'h005);
+
+    // ---------------------------------------------
+    // FILTCTRL (0x4000)
+    // ---------------------------------------------
+    // FLTRG_START: 1-clock だけ 1 にする
+    always_ff {
+        if_reset {
+            FLTRG_START = 1'b0;
+        } else if FLTRG_START {
+            FLTRG_START = 1'b0;
+        } else {
+            FLTRG_START = bWriteB0 && bSelectReg00 && WDATA[0];
+        }
+    }
+
+    // reg_rsts: 4-cycle assert
+    always_ff {
+        if_reset {
+            reg_rsts = 4'b0;
+        } else if bWriteB0 && bSelectReg00 {
+            reg_rsts = {3'b0, WDATA[1]};
+        } else {
+            reg_rsts = {reg_rsts[2:0], 1'b0};
+        }
+    }
+
+    // ---------------------------------------------
+    // FILTINT (0x4008)
+    // ---------------------------------------------
+    // Interrupt register (DRAWINT): INTENBL
+    always_ff {
+        if_reset {
+            flt_ien = 1'b0;
+        } else if bWriteB0 & bSelectReg08 {
+            flt_ien = WDATA[0];
+        }
+    }
+
+    // Interrupt signal
+    always_ff {
+        if_reset {
+            FLTRG_IRQ = 1'b0;
+        } else if FLTVC_INT & flt_ien {
+            FLTRG_IRQ = 1'b1;
+        } else if bWriteB0 & bSelectReg08 & WDATA[1] {
+            FLTRG_IRQ = 1'b0;
+        }
+    }
+
+    // ---------------------------------------------
+    // FILTVRAM_SRC (0x400C)
+    // ---------------------------------------------
+    always_ff {
+        if_reset {
+            FLTRG_VRAMSRC = 32'h0;
+        } else {
+            if bWriteB3 & bSelectReg0C {
+                FLTRG_VRAMSRC[31:24] = WDATA[31:24];
+            }
+            if bWriteB2 & bSelectReg0C {
+                FLTRG_VRAMSRC[23:16] = WDATA[23:16];
+            }
+            if bWriteB1 & bSelectReg0C {
+                FLTRG_VRAMSRC[15:8] = WDATA[15:8];
+            }
+            if bWriteB0 & bSelectReg0C {
+                FLTRG_VRAMSRC[7:0] = WDATA[7:0];
+            }
+        }
+    }
+
+    // ---------------------------------------------
+    // FILTVRAM_FRM (0x4010)
+    // ---------------------------------------------
+    always_ff {
+        if_reset {
+            FLTRG_VRAMFRM = 32'h0;
+        } else {
+            if bWriteB3 & bSelectReg10 {
+                FLTRG_VRAMFRM[31:24] = WDATA[31:24];
+            }
+            if bWriteB2 & bSelectReg10 {
+                FLTRG_VRAMFRM[23:16] = WDATA[23:16];
+            }
+            if bWriteB1 & bSelectReg10 {
+                FLTRG_VRAMFRM[15:8] = WDATA[15:8];
+            }
+            if bWriteB0 & bSelectReg10 {
+                FLTRG_VRAMFRM[7:0] = WDATA[7:0];
+            }
+        }
+    }
+
+    // ---------------------------------------------
+    // FILTCOLOR (0x4014)
+    // ---------------------------------------------
+    always_ff {
+        if_reset {
+            FLTRG_COLOR = 3'b000;
+        } else {
+            if bWriteB0 & bSelectReg14 {
+                FLTRG_COLOR = WDATA[2:0];
+            }
+        }
+    }
+
+    // ---------------------------------------------
+    // register read mux
+    // ---------------------------------------------
+    always_comb {
+        RDATA = case RDADDR[11:2] {
+            10'h000: 32'h0,
+            10'h001: {31'b0, FLTVC_BUSY},
+            10'h002: {31'h0, flt_ien},
+            10'h003: FLTRG_VRAMSRC[31:0],
+            10'h004: FLTRG_VRAMFRM[31:0],
+            10'h005: {29'b0, FLTRG_COLOR[2:0]},
+            default: 32'h0,
+        };
+    }
+}

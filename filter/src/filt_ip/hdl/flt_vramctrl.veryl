@@ -1,0 +1,90 @@
+/// VRAM Control
+///
+/// - Read the source image from DDR via the AXI bus.
+/// - Store the read source image into the source FIFO (src FIFO).
+/// - Read data from the source FIFO and send it to fit_proc.
+/// - Store the post-filter data into the write FIFO (wrt FIFO).
+/// - Read data from the write FIFO and write it back to DDR.
+pub module flt_vramctrl (
+    CLK : input clock,
+    ARST: input reset,
+    RSTS: input reset, // sync reset
+
+    RESOL: input Resolution::Mode,
+
+    // Read Address
+    ARADDR : output logic<32>,
+    ARVALID: output logic    ,
+    ARLEN  : output logic<8> ,
+    ARREADY: input  logic    ,
+
+    // Read Data
+    RDATA : input  logic<32>,
+    RLAST : input  logic    ,
+    RVALID: input  logic    ,
+    RREADY: output logic    ,
+
+    // Write Address
+    AWADDR : output logic<32>,
+    AWVALID: output logic    ,
+    AWLEN  : output logic<8> ,
+    AWREADY: input  logic    ,
+
+    // Write Data
+    WDATA : output logic<32>,
+    WLAST : output logic    ,
+    WVALID: output logic    ,
+    WSTRB : output logic<4> ,
+    WREADY: input  logic    ,
+
+    // Response
+    BVALID: input  logic,
+    BREADY: output logic,
+
+    FLTRG_START  : input logic    ,
+    FLTRG_VRAMSRC: input logic<32>,
+    FLTRG_VRAMFRM: input logic<32>,
+
+    FLTPC_WDATAVLD: input logic    ,
+    FLTPC_WDATA   : input logic<32>,
+
+    FLTVC_SDATAVLD: output logic    ,
+    FLTVC_SDATA   : output logic<32>,
+
+    FLTVC_BUSY: output logic,
+    FLTVC_INT : output logic,
+) {
+    // TODO: implement
+
+    // Source data FIDO
+    inst u_fifo_src: $sv::fifo_32in32out_2048depth (
+        clk       : _,
+        din       : _,
+        rd_en     : _,
+        rst       : _,
+        wr_en     : _,
+        dout      : _,
+        empty     : _,
+        full      : _,
+        overflow  : _,
+        valid     : _,
+        underflow : _,
+        data_count: _,
+    );
+
+    // Write data FIFO
+    inst u_fifo_wrt: $sv::fifo_32in32out_2048depth (
+        clk       : _,
+        din       : _,
+        rd_en     : _,
+        rst       : _,
+        wr_en     : _,
+        dout      : _,
+        empty     : _,
+        full      : _,
+        overflow  : _,
+        valid     : _,
+        underflow : _,
+        data_count: _,
+    );
+}
