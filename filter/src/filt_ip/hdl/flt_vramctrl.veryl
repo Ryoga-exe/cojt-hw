@@ -8,7 +8,7 @@
 pub module flt_vramctrl (
     CLK : input clock,
     ARST: input reset,
-    RSTS: input reset, // sync reset
+    RSTS: input reset, // module reset (High)
 
     RESOL: input Resolution::Mode,
 
@@ -54,37 +54,294 @@ pub module flt_vramctrl (
     FLTVC_BUSY: output logic,
     FLTVC_INT : output logic,
 ) {
-    // TODO: implement
+    let rst: '_ default reset_sync_high = ARST | RSTS;
 
-    // Source data FIDO
+    const BLEN: i32 = 16; // beats per burst
+
+    // TODO: make common module
+    var width : logic<16>;
+    var height: logic<16>;
+    always_comb {
+        case RESOL {
+            Resolution::Mode::vga: {
+                width  = 16'd640;
+                height = 16'd480;
+            }
+            Resolution::Mode::xga: {
+                width  = 16'd1024;
+                height = 16'd768;
+            }
+            Resolution::Mode::sxga: {
+                width  = 16'd1280;
+                height = 16'd1024;
+            }
+            default: {
+                width  = 16'd640;
+                height = 16'd480;
+            }
+        }
+    }
+    let pixel_total: logic<32> = width * height;
+
+    var busy      : logic;
+    var busy_d    : logic;
+    assign FLTVC_BUSY = busy;
+
+    var start_ff: logic;
+    always_ff {
+        if_reset {
+            start_ff = 1'b0;
+        } else {
+            start_ff = FLTRG_START;
+        }
+    }
+    let start_pulse: logic = FLTRG_START & ~start_ff;
+
+    // Address/counters
+    var rd_addr: logic<32>;
+    var wr_addr: logic<32>;
+
+    // READ side state
+    var rd_remaining: logic<32>; // pixels remaining to issue via AR
+    var rd_beats_rem: logic<8> ; // beats remaining for current burst (for R)
+    var rd_inflight : logic    ; // have a burst outstanding
+
+    // WRITE side state
+    var wr_remaining: logic<32>; // pixels remaining to write
+    var wr_beats_rem: logic<8> ; // beats remaining for current burst (for W)
+    var aw_inflight : logic    ; // address phase in flight
+    var b_resp_out  : logic<16>; // number of write responses pending
+
+    // FIFOs
+    // src FIFO: DDR -> flt_proc
+    var src_dout : logic<32>;
+    var src_empty: logic    ;
+    var src_full : logic    ;
+    var src_valid: logic    ;
+    var src_rd_en: logic    ;
+    var src_wr_en: logic    ;
+    var src_count: logic<12>;
+
+    // wrt FIFO: flt_proc -> DDR
+    var wrt_dout : logic<32>;
+    var wrt_empty: logic    ;
+    var wrt_full : logic    ;
+    var wrt_valid: logic    ;
+    var wrt_rd_en: logic    ;
+    var wrt_wr_en: logic    ;
+    var wrt_count: logic<12>;
+
+    assign FLTVC_SDATA    = src_dout;
+    assign FLTVC_SDATAVLD = src_valid;
+    assign src_rd_en      = src_valid;
+
+    assign wrt_wr_en = FLTPC_WDATAVLD;
+
+    // AXI fixed signals
+    assign WSTRB  = 4'hF; // 4 bytes
+    assign BREADY = 1'b1;
+
+    // Read Address
+    var next_rd_beats: logic<8>;
+    let want         : logic<8> = if rd_remaining >= BLEN ? BLEN[7:0] : rd_remaining[7:0];
+    always_ff {
+        if_reset {
+            ARADDR       = 32'h0;
+            ARVALID      = 1'b0;
+            ARLEN        = 8'h0;
+            RREADY       = 1'b0;
+            rd_addr      = 32'h0;
+            rd_remaining = 32'h0;
+            rd_beats_rem = 8'h0;
+            rd_inflight  = 1'b0;
+        } else {
+            RREADY = (rd_beats_rem != 0) && !src_full; // default
+
+            // launch new frame
+            if start_pulse && !busy {
+                rd_addr      = FLTRG_VRAMSRC;
+                rd_remaining = pixel_total;
+                ARADDR       = FLTRG_VRAMSRC;
+                ARLEN        = 8'h0;
+                ARVALID      = 1'b0;
+                rd_beats_rem = 8'h0;
+                rd_inflight  = 1'b0;
+            }
+
+            // Issue AR when no burst inflight and have remaining and FIFO has room
+            if !rd_inflight && rd_remaining != 0 {
+                // ensure FIFO can accept at least `want` words
+                if src_count <= 12'd2048 - 12'd32 || want <= 8'd16 {
+                    if !ARVALID {
+                        ARADDR  = rd_addr;
+                        ARLEN   = want - 1;
+                        ARVALID = 1'b1;
+                    }
+                }
+            }
+
+            // Handshake AR
+            if ARVALID && ARREADY {
+                b_resp_out   = b_resp_out;
+                ARVALID      = 1'b0;
+                rd_inflight  = 1'b1;
+                rd_beats_rem = ARLEN + 1;
+                // advance for next burst
+                rd_addr      += {24'h0, ARLEN + 1} << 2; // *4 bytes
+                rd_remaining -= ARLEN + 1;
+            }
+
+            // Accept R data into FIFO
+            if RVALID && RREADY {
+                // push into src info
+                // (actual write happens via src_wr_en below)
+                rd_beats_rem -= 1;
+                if RLAST || rd_beats_rem == 8'd1 {
+                    rd_inflight = 1'b0;
+                }
+            }
+
+            // src FIFO write enable follows R handshake
+        }
+    }
+
+    assign src_wr_en = RVALID && RREADY;
+
+    // Write Address/Data
+    let beats_rem  : logic<8> = if wr_remaining >= BLEN ? BLEN[7:0] : wr_remaining[7:0];
+    let beats_avail: logic<8> = if wrt_count[7:0] <: beats_rem ? wrt_count[7:0] : beats_rem;
+    always_ff {
+        if_reset {
+            AWADDR  = 32'h0;
+            AWVALID = 1'b0;
+            AWLEN   = 8'h0;
+            WDATA   = 32'h0;
+            WVALID  = 1'b0;
+            WLAST   = 1'b0;
+
+            wr_addr      = 32'h0;
+            wr_remaining = 32'h0;
+            wr_beats_rem = 8'h0;
+            aw_inflight  = 1'b0;
+            b_resp_out   = 16'd0;
+            wrt_rd_en    = 1'b0;
+        } else {
+            WVALID    = 1'b0; // default
+            WLAST     = 1'b0; // default
+            wrt_rd_en = 1'b0; // default
+
+            // launch new frame (write side)
+            if start_pulse && !busy {
+                wr_addr      = FLTRG_VRAMFRM;
+                wr_remaining = pixel_total;
+                wr_beats_rem = 8'h0;
+                AWVALID      = 1'b0;
+                aw_inflight  = 1'b0;
+            }
+        }
+
+        // Issue AW when no address inflight and we have data & remaining
+        if !aw_inflight && wr_remaining != 0 {
+            if beats_avail != 0 {
+                if !AWVALID {
+                    AWADDR  = wr_addr;
+                    AWLEN   = beats_avail - 1;
+                    AWVALID = 1'b1;
+                }
+            }
+        }
+
+        // AW handshake
+        if AWVALID && AWREADY {
+            b_resp_out   += 1;
+            AWVALID      =  1'b0;
+            aw_inflight  =  1'b1;
+            wr_beats_rem =  AWLEN + 1;
+            // advance addr/remaining for next burst
+            wr_addr      += {24'h0, AWLEN + 1} << 2;
+            wr_remaining += AWLEN + 1;
+        }
+
+        // Stream W beats after AW has been accepted (or simply whenever beats_rem > 0)
+        if wr_beats_rem != 0 && !wrt_empty {
+            // present one beat
+            WDATA  = wrt_dout;
+            WVALID = 1'b1;
+            WLAST  = wr_beats_rem == 8'd1;
+            if WVALID && WREADY {
+                wrt_rd_en    =  1'b1; // pop from FIFO
+                wr_beats_rem -= 1;
+                if wr_beats_rem == 8'd1 {
+                    aw_inflight = 1'b0; // burst complete
+                }
+            }
+        }
+    }
+
+    // Write response tracking
+    always_ff {
+        if_reset {} else {
+            if BVALID && BREADY && b_resp_out != 0 {
+                b_resp_out -= 1;
+            }
+        }
+    }
+
+    // Busy / INT
+    // Busy when a frame is in progress or residual data exists
+    let frame_idle: logic = (rd_remaining == 0) && (wr_remaining == 0) && (src_count == 0) && (wrt_count == 0) && (rd_beats_rem == 0) && (wr_beats_rem == 0) && (b_resp_out == 0) && !ARVALID && !AWVALID && !rd_inflight && !aw_inflight;
+
+    always_ff {
+        if_reset {
+            busy      = 1'b0;
+            busy_d    = 1'b0;
+            FLTVC_INT = 1'b0;
+        } else {
+            busy_d = busy;
+            // start
+            if start_pulse && !busy {
+                busy = 1'b1;
+            }
+
+            // finish
+            if busy && frame_idle {
+                busy = 1'b0;
+            }
+
+            // INT pulse on BUSY falling
+            FLTVC_INT = (busy == 1'b1) && (busy == 1'b0);
+        }
+    }
+
+    // Source data FIDO (R -> PROC)
     inst u_fifo_src: $sv::fifo_32in32out_2048depth (
-        clk       : _,
-        din       : _,
-        rd_en     : _,
-        rst       : _,
-        wr_en     : _,
-        dout      : _,
-        empty     : _,
-        full      : _,
-        overflow  : _,
-        valid     : _,
-        underflow : _,
-        data_count: _,
+        clk       : CLK      ,
+        din       : RDATA    ,
+        rd_en     : src_rd_en,
+        rst       : rst      ,
+        wr_en     : src_wr_en,
+        dout      : src_dout ,
+        empty     : src_empty,
+        full      : src_full ,
+        overflow  : _        ,
+        valid     : src_valid,
+        underflow : _        ,
+        data_count: src_count,
     );
 
-    // Write data FIFO
+    // Write data FIFO (PROC -> W)
     inst u_fifo_wrt: $sv::fifo_32in32out_2048depth (
-        clk       : _,
-        din       : _,
-        rd_en     : _,
-        rst       : _,
-        wr_en     : _,
-        dout      : _,
-        empty     : _,
-        full      : _,
-        overflow  : _,
-        valid     : _,
-        underflow : _,
-        data_count: _,
+        clk       : CLK        ,
+        din       : FLTPC_WDATA,
+        rd_en     : wrt_rd_en  ,
+        rst       : rst        ,
+        wr_en     : wrt_wr_en  ,
+        dout      : wrt_dout   ,
+        empty     : wrt_empty  ,
+        full      : wrt_full   ,
+        overflow  : _          ,
+        valid     : wrt_valid  ,
+        underflow : _          ,
+        data_count: wrt_count  ,
     );
 }
