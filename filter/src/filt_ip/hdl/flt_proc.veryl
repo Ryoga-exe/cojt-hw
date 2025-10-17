@@ -17,17 +17,25 @@ pub module flt_proc (
     FLTPC_WDATAVLD: output logic    ,
     FLTPC_WDATA   : output logic<32>,
 ) {
-    always_ff {
-        if FLTVC_SDATAVLD {
-            FLTPC_WDATAVLD = 1'b1;
+    let rst: '_ default reset = ARST | RSTS;
 
-            FLTPC_WDATA = {
-                if FLTRG_COLOR[2] ? FLTVC_SDATA[23:16] : 8'h00,
-                if FLTRG_COLOR[1] ? FLTVC_SDATA[15:8] : 8'h00,
-                if FLTRG_COLOR[0] ? FLTVC_SDATA[7:0] : 8'h00,
-            };
-        } else {
+    always_ff {
+        if_reset {
             FLTPC_WDATAVLD = 1'b0;
+            FLTPC_WDATA    = 32'h0;
+        } else {
+            if FLTVC_SDATAVLD {
+                FLTPC_WDATAVLD = 1'b1;
+
+                FLTPC_WDATA = {
+                    8'h00,
+                    if FLTRG_COLOR[2] ? FLTVC_SDATA[23:16] : 8'h00,
+                    if FLTRG_COLOR[1] ? FLTVC_SDATA[15:8] : 8'h00,
+                    if FLTRG_COLOR[0] ? FLTVC_SDATA[7:0] : 8'h00,
+                };
+            } else {
+                FLTPC_WDATAVLD = 1'b0;
+            }
         }
     }
 }
