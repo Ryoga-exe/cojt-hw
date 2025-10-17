@@ -17,5 +17,17 @@ pub module flt_proc (
     FLTPC_WDATAVLD: output logic    ,
     FLTPC_WDATA   : output logic<32>,
 ) {
-    // TODO: implement
+    always_ff {
+        if FLTVC_SDATAVLD {
+            FLTPC_WDATAVLD = 1'b1;
+
+            FLTPC_WDATA = {
+                if FLTRG_COLOR[2] ? FLTVC_SDATA[23:16] : 8'h00,
+                if FLTRG_COLOR[1] ? FLTVC_SDATA[15:8] : 8'h00,
+                if FLTRG_COLOR[0] ? FLTVC_SDATA[7:0] : 8'h00,
+            };
+        } else {
+            FLTPC_WDATAVLD = 1'b0;
+        }
+    }
 }
