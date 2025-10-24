@@ -56,7 +56,9 @@ pub module flt_vramctrl (
 ) {
     let rst: '_ default reset_sync_high = ARST | RSTS;
 
-    const BLEN: u32 = 16; // beats per burst
+    const BLEN        : u32 = 16; // beats per burst
+    const FIFO_DEPTH  : u32 = 1024;
+    const SRC_SAFE_GAP: u32 = 2;
 
     // TODO: make common module
     var width : logic<16>;
@@ -81,39 +83,71 @@ pub module flt_vramctrl (
             }
         }
     }
-    let pixel_total: logic<32> = width * height;
+    let line_bytes: logic<32> = {width, 2'b00};
 
-    var busy      : logic;
-    var busy_d    : logic;
-    assign FLTVC_BUSY = busy;
+    enum LineState {
+        idle,
+        read,
+        write,
+        done,
+    }
 
-    var start_ff: logic;
+    var line_state: LineState    ;
+    var line_index: logic    <16>;
+
+    var start_q: logic;
     always_ff {
         if_reset {
-            start_ff = 1'b0;
+            start_q = 1'b0;
         } else {
-            start_ff = FLTRG_START;
+            start_q = FLTRG_START;
         }
     }
-    let start_pulse: logic = FLTRG_START & ~start_ff;
+    let start_pulse: logic = FLTRG_START & ~start_q;
 
-    // Address/counters
-    var rd_addr: logic<32>;
-    var wr_addr: logic<32>;
+    // Busy/INT
+    var busy_d    : logic;
+    assign FLTVC_BUSY = (line_state != LineState::idle);
 
-    // READ side state
-    var rd_remaining: logic<32>; // pixels remaining to issue via AR
-    var rd_beats_rem: logic<8> ; // beats remaining for current burst (for R)
-    var rd_inflight : logic    ; // have a burst outstanding
+    always_ff {
+        if_reset {
+            line_state = LineState::idle;
+            line_index = 16'd0;
+            busy_d     = 1'b0;
+            FLTVC_INT  = 1'b0;
+        } else {
+            busy_d = FLTVC_BUSY;
+            case line_state {
+                LineState::idle: {
+                    if start_pulse {
+                        line_state = LineState::read;
+                        line_index = 16'd0;
+                    }
+                }
+                LineState::read: {
+                    if rd_line_done {
+                        line_state = LineState::write;
+                    }
+                }
+                LineState::write: {
+                    if wr_line_done {
+                        if line_index == height - 1 {
+                            line_state = LineState::done;
+                        } else {
+                            line_index += 1;
+                            line_state =  LineState::read;
+                        }
+                    }
+                }
+                LineState::done: {
+                    line_state = LineState::idle;
+                }
+            }
+            FLTVC_INT = (busy_d == 1'b1) && (FLTVC_BUSY == 1'b0); // BUSY falling edge
+        }
+    }
 
-    // WRITE side state
-    var wr_remaining: logic<32>; // pixels remaining to write
-    var wr_beats_rem: logic<8> ; // beats remaining for current burst (for W)
-    var aw_inflight : logic    ; // address phase in flight
-    var b_resp_out  : logic<16>; // number of write responses pending
-
-    // FIFOs
-    // src FIFO: DDR -> flt_proc
+    // Source data FIDO (R -> PROC)
     var src_dout : logic<32>;
     var src_empty: logic    ;
     var src_full : logic    ;
@@ -122,197 +156,6 @@ pub module flt_vramctrl (
     var src_wr_en: logic    ;
     var src_count: logic<12>;
 
-    // wrt FIFO: flt_proc -> DDR
-    var wrt_dout : logic<32>;
-    var wrt_empty: logic    ;
-    var wrt_full : logic    ;
-    var wrt_valid: logic    ;
-    var wrt_rd_en: logic    ;
-    var wrt_wr_en: logic    ;
-    var wrt_count: logic<12>;
-
-    assign FLTVC_SDATA    = src_dout;
-    assign FLTVC_SDATAVLD = src_valid;
-    assign src_rd_en      = src_valid;
-
-    assign wrt_wr_en = FLTPC_WDATAVLD;
-
-    // AXI fixed signals
-    assign WSTRB  = 4'hF; // 4 bytes
-    assign BREADY = 1'b1;
-
-    // Read Address
-    let want: logic<8> = if rd_remaining >= BLEN ? BLEN[7:0] : rd_remaining[7:0];
-    always_ff {
-        if_reset {
-            ARADDR       = 32'h0;
-            ARVALID      = 1'b0;
-            ARLEN        = 8'h0;
-            RREADY       = 1'b0;
-            rd_addr      = 32'h0;
-            rd_remaining = 32'h0;
-            rd_beats_rem = 8'h0;
-            rd_inflight  = 1'b0;
-        } else {
-            RREADY = (rd_beats_rem != 0) && !src_full; // default
-
-            // launch new frame
-            if start_pulse && !busy {
-                rd_addr      = FLTRG_VRAMSRC;
-                rd_remaining = pixel_total;
-                ARADDR       = FLTRG_VRAMSRC;
-                ARLEN        = 8'h0;
-                ARVALID      = 1'b0;
-                rd_beats_rem = 8'h0;
-                rd_inflight  = 1'b0;
-            }
-
-            // Issue AR when no burst inflight and have remaining and FIFO has room
-            if !rd_inflight && rd_remaining != 0 {
-                // ensure FIFO can accept at least `want` words
-                if src_count <= 12'd2048 - 12'd32 || want <= 8'd16 {
-                    if !ARVALID {
-                        ARADDR  = rd_addr;
-                        ARLEN   = want - 1;
-                        ARVALID = 1'b1;
-                    }
-                }
-            }
-
-            // Handshake AR
-            if ARVALID && ARREADY {
-                b_resp_out   = b_resp_out;
-                ARVALID      = 1'b0;
-                rd_inflight  = 1'b1;
-                rd_beats_rem = ARLEN + 1;
-                // advance for next burst
-                rd_addr      += {24'h0, ARLEN + 1} << 2; // *4 bytes
-                rd_remaining -= ARLEN + 1;
-            }
-
-            // Accept R data into FIFO
-            if RVALID && RREADY {
-                // push into src info
-                // (actual write happens via src_wr_en below)
-                rd_beats_rem -= 1;
-                if RLAST || rd_beats_rem == 8'd1 {
-                    rd_inflight = 1'b0;
-                }
-            }
-
-            // src FIFO write enable follows R handshake
-        }
-    }
-
-    assign src_wr_en = RVALID && RREADY;
-
-    // Write Address/Data
-    let beats_rem  : logic<8> = if wr_remaining >= BLEN ? BLEN[7:0] : wr_remaining[7:0];
-    let beats_avail: logic<8> = if wrt_count[7:0] <: beats_rem ? wrt_count[7:0] : beats_rem;
-    always_ff {
-        if_reset {
-            AWADDR  = 32'h0;
-            AWVALID = 1'b0;
-            AWLEN   = 8'h0;
-            WDATA   = 32'h0;
-            WVALID  = 1'b0;
-            WLAST   = 1'b0;
-
-            wr_addr      = 32'h0;
-            wr_remaining = 32'h0;
-            wr_beats_rem = 8'h0;
-            aw_inflight  = 1'b0;
-            b_resp_out   = 16'd0;
-            wrt_rd_en    = 1'b0;
-        } else {
-            WVALID    = 1'b0; // default
-            WLAST     = 1'b0; // default
-            wrt_rd_en = 1'b0; // default
-
-            // launch new frame (write side)
-            if start_pulse && !busy {
-                wr_addr      = FLTRG_VRAMFRM;
-                wr_remaining = pixel_total;
-                wr_beats_rem = 8'h0;
-                AWVALID      = 1'b0;
-                aw_inflight  = 1'b0;
-            }
-        }
-
-        // Issue AW when no address inflight and we have data & remaining
-        if !aw_inflight && wr_remaining != 0 {
-            if beats_avail != 0 {
-                if !AWVALID {
-                    AWADDR  = wr_addr;
-                    AWLEN   = beats_avail - 1;
-                    AWVALID = 1'b1;
-                }
-            }
-        }
-
-        // AW handshake
-        if AWVALID && AWREADY {
-            b_resp_out   += 1;
-            AWVALID      =  1'b0;
-            aw_inflight  =  1'b1;
-            wr_beats_rem =  AWLEN + 1;
-            // advance addr/remaining for next burst
-            wr_addr      += {24'h0, AWLEN + 1} << 2;
-            wr_remaining += AWLEN + 1;
-        }
-
-        // Stream W beats after AW has been accepted (or simply whenever beats_rem > 0)
-        if wr_beats_rem != 0 && !wrt_empty {
-            // present one beat
-            WDATA  = wrt_dout;
-            WVALID = 1'b1;
-            WLAST  = wr_beats_rem == 8'd1;
-            if WVALID && WREADY {
-                wrt_rd_en    =  1'b1; // pop from FIFO
-                wr_beats_rem -= 1;
-                if wr_beats_rem == 8'd1 {
-                    aw_inflight = 1'b0; // burst complete
-                }
-            }
-        }
-    }
-
-    // Write response tracking
-    always_ff {
-        if_reset {} else {
-            if BVALID && BREADY && b_resp_out != 0 {
-                b_resp_out -= 1;
-            }
-        }
-    }
-
-    // Busy / INT
-    // Busy when a frame is in progress or residual data exists
-    let frame_idle: logic = (rd_remaining == 0) && (wr_remaining == 0) && (src_count == 0) && (wrt_count == 0) && (rd_beats_rem == 0) && (wr_beats_rem == 0) && (b_resp_out == 0) && !ARVALID && !AWVALID && !rd_inflight && !aw_inflight;
-
-    always_ff {
-        if_reset {
-            busy      = 1'b0;
-            busy_d    = 1'b0;
-            FLTVC_INT = 1'b0;
-        } else {
-            busy_d = busy;
-            // start
-            if start_pulse && !busy {
-                busy = 1'b1;
-            }
-
-            // finish
-            if busy && frame_idle {
-                busy = 1'b0;
-            }
-
-            // INT pulse on BUSY falling
-            FLTVC_INT = (busy == 1'b1) && (busy == 1'b0);
-        }
-    }
-
-    // Source data FIDO (R -> PROC)
     inst u_fifo_src: $sv::fifo_32in32out_2048depth (
         clk       : CLK      ,
         din       : RDATA    ,
@@ -329,6 +172,14 @@ pub module flt_vramctrl (
     );
 
     // Write data FIFO (PROC -> W)
+    var wrt_dout : logic<32>;
+    var wrt_empty: logic    ;
+    var wrt_full : logic    ;
+    var wrt_valid: logic    ;
+    var wrt_rd_en: logic    ;
+    var wrt_wr_en: logic    ;
+    var wrt_count: logic<12>;
+
     inst u_fifo_wrt: $sv::fifo_32in32out_2048depth (
         clk       : CLK        ,
         din       : FLTPC_WDATA,
@@ -343,4 +194,216 @@ pub module flt_vramctrl (
         underflow : _          ,
         data_count: wrt_count  ,
     );
+
+    assign FLTVC_SDATA    = src_dout;
+    assign FLTVC_SDATAVLD = src_valid;
+    assign src_rd_en      = src_valid;
+    assign wrt_wr_en      = FLTPC_WDATAVLD;
+
+    // READ (AR/R) FSM
+    enum RState {
+        idle,
+        set_addr,
+        read,
+        wait,
+    }
+    var r_state    : RState    ;
+    var r_addr     : logic <32>;
+    var r_line_rem : logic <16>;
+    var r_beats_rem: logic <8> ;
+    var r_inflight : logic     ;
+
+    let rd_line_done: logic = (r_line_rem == 16'd0) && !r_inflight && (r_beats_rem == 8'd0);
+
+    always_ff {
+        if_reset {
+            ARADDR      = 32'd0;
+            ARLEN       = 8'd0;
+            ARVALID     = 1'b0;
+            RREADY      = 1'b0;
+            r_state     = RState::idle;
+            r_addr      = 32'd0;
+            r_line_rem  = 16'd0;
+            r_beats_rem = 8'd0;
+            r_inflight  = 1'b0;
+            src_wr_en   = 1'b0;
+        } else {
+            case r_state {
+                RState::idle: {
+                    RREADY = 1'b0;
+                    if line_state == LineState::read {
+                        r_addr      = FLTRG_VRAMSRC + (line_bytes * line_index);
+                        r_line_rem  = width;
+                        r_beats_rem = 8'd0;
+                        r_inflight  = 1'b0;
+                        r_state     = RState::set_addr;
+                    }
+                }
+                RState::set_addr: {
+                    // issue AR when FIFO has room
+                    if !ARVALID && !r_inflight && (r_line_rem != 0) && (src_count <= FIFO_DEPTH - SRC_SAFE_GAP) {
+                        ARADDR  = r_addr;
+                        ARLEN   = (if r_line_rem >= BLEN ? BLEN[7:0] : r_line_rem[7:0]) - 1;
+                        ARVALID = 1'b1;
+                    }
+                    // handshake
+                    if ARVALID && ARREADY {
+                        ARVALID     =  1'b0;
+                        r_inflight  =  1'b1;
+                        r_beats_rem =  ARLEN + 1;
+                        r_addr      += {24'h0, ARLEN + 1} << 2;
+                        r_line_rem  -= ARLEN + 1;
+                        r_state     =  RState::read;
+                    }
+                }
+                RState::read: {
+                    // Accept data when FIFO can accept it
+                    RREADY = (src_count <= FIFO_DEPTH - SRC_SAFE_GAP);
+                    if RVALID && RREADY {
+                        r_beats_rem -= 1;
+                        src_wr_en   =  1'b1;
+                        if RLAST || r_beats_rem == 8'd1 {
+                            r_inflight = 1'b0;
+                            r_state    = if r_line_rem != 0 ? RState::set_addr : RState::wait;
+                        }
+                    } else {
+                        src_wr_en = 1'b0;
+                    }
+                }
+                RState::wait: {
+                    RREADY = 1'b0;
+                    if line_state != LineState::read {
+                        r_state = RState::idle;
+                    } else if r_line_rem == 0 && !r_inflight && r_beats_rem == 0 {
+                        // wait here until line manager switches to WRITE
+                        r_state = RState::wait;
+                    }
+                }
+            }
+            if !(RVALID && RREADY) {
+                src_wr_en = 1'b0; // ensure single-cycle pulse
+            }
+        }
+    }
+
+    // src_wr_en combinational pulse already ensured above
+
+    // WRITE (AW/W/B) FSM
+    enum WState {
+        idle,
+        set_addr,
+        write,
+        wait,
+    }
+    var w_state    : WState    ;
+    var w_addr     : logic <32>;
+    var w_line_rem : logic <16>;
+    var w_beats_rem: logic <8> ;
+    var w_on_txn   : logic     ;
+
+    var end_of_burst: logic;
+
+    var wdata_q      : logic<32>;
+    var wdata_q_valid: logic    ;
+
+    assign WSTRB  = 4'hF;
+    assign BREADY = (w_state == WState::wait);
+
+    let wwant : logic<8> = if w_line_rem >= BLEN ? BLEN[7:0] : w_line_rem[7:0];
+    let wavail: logic<8> = if wrt_count[7:0] <: wwant ? wrt_count[7:0] : wwant;
+
+    always_ff {
+        if_reset {
+            w_state       = WState::idle;
+            AWADDR        = 32'd0;
+            AWLEN         = 8'd0;
+            AWVALID       = 1'b0;
+            WDATA         = 32'd0;
+            WLAST         = 1'b0;
+            WVALID        = 1'b0;
+            w_addr        = 32'd0;
+            w_line_rem    = 16'd0;
+            w_beats_rem   = 8'd0;
+            w_on_txn      = 1'b0;
+            end_of_burst  = 1'b0;
+            wrt_rd_en     = 1'b0;
+            wdata_q       = 32'd0;
+            wdata_q_valid = 1'b0;
+        } else {
+            wrt_rd_en = 1'b0;
+
+            case w_state {
+                WState::idle: {
+                    WVALID        = 1'b0;
+                    WLAST         = 1'b0;
+                    end_of_burst  = 1'b0;
+                    w_on_txn      = 1'b0;
+                    wdata_q_valid = 1'b0;
+                    if line_state == LineState::write {
+                        w_addr     = FLTRG_VRAMFRM + line_bytes * line_index;
+                        w_line_rem = width;
+                        w_state    = WState::set_addr;
+                    }
+                }
+                WState::set_addr: {
+                    // choose burst size limited by remaining line and FIFO content
+                    if !AWVALID && !w_on_txn && (w_line_rem != 0) && (wrt_count != 16'd0) {
+                        if wavail != 8'd0 {
+                            AWADDR  = w_addr;
+                            AWLEN   = wavail - 1;
+                            AWVALID = 1'b1;
+                        }
+                    }
+                    if AWVALID && AWREADY {
+                        AWVALID     =  1'b0;
+                        w_on_txn    =  1'b1;
+                        w_beats_rem =  AWLEN + 1;
+                        w_addr      += {24'h0, AWLEN + 1} << 2;
+                        w_line_rem  -= AWLEN + 1;
+                        // prefetch first beat into local buffer (one cycle latter via wrt_valid)
+                        wrt_rd_en = 1'b1;
+                        w_state   = WState::write;
+                    }
+                }
+                WState::write: {
+                    // load buffer when not holding data and FIFO has presented valid
+                    if !wdata_q_valid && wrt_valid {
+                        wdata_q       = wrt_dout;
+                        wdata_q_valid = 1'b1;
+                    }
+                    // drive W from buffer, hold until WREADY
+                    WDATA  = wdata_q;
+                    WVALID = wdata_q_valid && !end_of_burst;
+                    WLAST  = (w_beats_rem == 8'd1) && wdata_q_valid;
+
+                    // When W beat accepted, drop buffer valid and fetch next (unless last)
+                    if WVALID && WREADY {
+                        wdata_q_valid =  1'b0;
+                        wrt_rd_en     =  !WLAST;
+                        w_beats_rem   -= 1;
+                        if WLAST {
+                            end_of_burst = 1'b1;
+                            w_on_txn     = 1'b0;
+                            w_state      = WState::wait;
+                        }
+                    }
+                }
+                WState::wait: {
+                    // wait for BRESP (one per burst)
+                    if BVALID && BREADY {
+                        end_of_burst = 1'b0;
+                        if w_line_rem == 0 && wrt_count == 0 && !wdata_q_valid {
+                            // line fully written
+                            w_state = WState::idle;
+                        } else {
+                            w_state = WState::set_addr;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // line done when write FSM returned to IDLE while line_state == LineState::write
+    let wr_line_done: logic = (w_state == WState::idle) && (line_state == LineState::write);
 }
