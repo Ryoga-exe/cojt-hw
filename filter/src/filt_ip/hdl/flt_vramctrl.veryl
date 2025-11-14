@@ -1,12 +1,9 @@
-// ============================== flt_vramctrl.veryl (corrected v5 - beats counter & Veryl ops) ==============================
 /// VRAM Control (Veryl, line-based; AXI4 32-bit/pixel)
 ///
-/// v5 changes:
-/// - Fix remaining VIP error "Expected N beats got 1" by **counting W beats explicitly** (`w_sent`)
-///   and generating `WLAST` when `w_sent == aw_beats_q-1`. No reliance on `w_beats_rem`.
-/// - Keep **AWLEN handshake safe** via `addr_prep`→`set_addr` (AWLEN stable before AWVALID).
-/// - Respect Veryl syntax: `_ default`, `as <bits>`, `?:`, and `>:` / `<:` operators.
-/// - READ side unchanged (RREADY=1 during burst; AR throttled by FIFO space).
+/// - READ 側は行単位でバースト (BLEN=16) で読み出し、src FIFO に突っ込む
+/// - WRITE 側は **1 ビート固定バースト (AWLEN=0)**
+///   → AW 1 回ごとに 32bit 1 ワード + WLAST=1 で書き込む
+///   → AWLEN と実ビート数の不一致が起こらないように簡略化
 pub module flt_vramctrl (
     CLK : input clock,
     ARST: input reset,
@@ -58,11 +55,12 @@ pub module flt_vramctrl (
     FLTVC_BUSY: output logic,
     FLTVC_INT : output logic,
 ) {
+    // unified synchronous-high reset
     let rst: '_ default reset_sync_high = ARST | RSTS;
 
-    const BLEN        : u32 = 16; // beats per burst (<=256)
-    const FIFO_DEPTH  : u32 = 2048; // 2048 to cover SXGA
-    const SRC_SAFE_GAP: u32 = 2; // headroom for filter latency
+    const BLEN        : u32 = 16; // READ side beats per burst
+    const FIFO_DEPTH  : u32 = 2048;
+    const SRC_SAFE_GAP: u32 = 2;
 
     // ---------------- geometry ----------------
     var width : logic<16>;
@@ -87,7 +85,7 @@ pub module flt_vramctrl (
             }
         }
     }
-    let line_bytes: logic<32> = {width, 2'b00};
+    let line_bytes: logic<32> = {width, 2'b00}; // width * 4
 
     // ---------------- line manager ----------------
     enum LineState {
@@ -109,10 +107,11 @@ pub module flt_vramctrl (
     }
     let start_pulse: logic = FLTRG_START & ~start_q;
 
-    var busy_d    : logic;
-    assign FLTVC_BUSY = (line_state != LineState::idle);
-
+    var busy_d      : logic;
     var rd_line_done: logic;
+    var wr_line_done: logic;
+
+    assign FLTVC_BUSY = (line_state != LineState::idle);
 
     always_ff {
         if_reset {
@@ -122,29 +121,41 @@ pub module flt_vramctrl (
             FLTVC_INT  = 1'b0;
         } else {
             busy_d = FLTVC_BUSY;
+
             case line_state {
-                LineState::idle: if start_pulse {
-                    line_state = LineState::read;
-                    line_index = 16'd0;
-                }
-                LineState::read: if rd_line_done {
-                    line_state = LineState::write;
-                }
-                LineState::write: if wr_line_done {
-                    if line_index == height - 1 {
-                        line_state = LineState::done;
-                    } else {
-                        line_index = line_index + 1;
+                LineState::idle: {
+                    if start_pulse {
                         line_state = LineState::read;
+                        line_index = 16'd0;
                     }
                 }
-                LineState::done: line_state = LineState::idle;
+                LineState::read: {
+                    if rd_line_done {
+                        line_state = LineState::write;
+                    }
+                }
+                LineState::write: {
+                    if wr_line_done {
+                        if line_index == height - 1 {
+                            line_state = LineState::done;
+                        } else {
+                            line_index = line_index + 1;
+                            line_state = LineState::read;
+                        }
+                    }
+                }
+                LineState::done: {
+                    line_state = LineState::idle;
+                }
             }
+
+            // BUSY 立下りで INT 1 パルス
             FLTVC_INT = (busy_d == 1'b1) && (FLTVC_BUSY == 1'b0);
         }
     }
 
     // ---------------- FIFOs & filter wiring ----------------
+    // src FIFO (R -> PROC)
     var src_dout : logic<32>;
     var src_empty: logic    ;
     var src_full : logic    ;
@@ -168,6 +179,7 @@ pub module flt_vramctrl (
         data_count: src_count,
     );
 
+    // wrt FIFO (PROC -> W)
     var wrt_dout : logic<32>;
     var wrt_empty: logic    ;
     var wrt_full : logic    ;
@@ -192,9 +204,9 @@ pub module flt_vramctrl (
     );
 
     assign FLTVC_SDATA    = src_dout;
-    assign FLTVC_SDATAVLD = src_valid; // dout valid = 1-cycle after rd_en
-    assign src_rd_en      = (!src_empty); // always drain when data exists
-    assign wrt_wr_en      = FLTPC_WDATAVLD;
+    assign FLTVC_SDATAVLD = src_valid; // dout valid 1 サイクル後
+    assign src_rd_en      = (!src_empty); // 常に空でない限りドレイン
+    assign wrt_wr_en      = FLTPC_WDATAVLD; // フィルタ出力を FIFO へ
 
     // ---------------- READ FSM (AR/R) ----------------
     enum RState {
@@ -215,11 +227,14 @@ pub module flt_vramctrl (
     var space_ok    : logic    ;
 
     always_comb {
-        let blen8       : logic<8> = BLEN as 8;
-        want8        = if r_line_rem >: (BLEN as 16) ? blen8 : (r_line_rem as 8);
+        // want = min(remain, BLEN)
+        let blen8: logic<8> = BLEN as 8;
+        want8 = if r_line_rem >: (BLEN as 16) ? blen8 : (r_line_rem as 8);
+
         need_space32 = (want8 as 32) + (SRC_SAFE_GAP as 32);
         avail32      = (FIFO_DEPTH as 32) - (src_count as 32);
         space_ok     = (avail32 >: need_space32) || (avail32 == need_space32);
+
         rd_line_done = (r_line_rem == 16'd0) && (r_inflight == 1'b0) && (r_beats_rem == 8'd0);
     }
 
@@ -250,20 +265,20 @@ pub module flt_vramctrl (
                 RState::set_addr: {
                     if !ARVALID && !r_inflight && (r_line_rem != 0) && space_ok {
                         ARADDR  = r_addr;
-                        ARLEN   = want8 - 1;
+                        ARLEN   = want8 - 1; // beats-1
                         ARVALID = 1'b1;
                     }
                     if ARVALID && ARREADY {
                         ARVALID     = 1'b0;
                         r_inflight  = 1'b1;
-                        r_beats_rem = want8; // use combo-latched want8
+                        r_beats_rem = want8; // このバーストのビート数
                         r_addr      = r_addr + ((want8 as 32) << 2);
                         r_line_rem  = r_line_rem - (want8 as 16);
                         r_state     = RState::read;
                     }
                 }
                 RState::read: {
-                    RREADY = 1'b1; // keep progress
+                    RREADY = 1'b1; // バースト中は止めない
                     if RVALID && RREADY {
                         r_beats_rem = r_beats_rem - 1;
                         src_wr_en   = 1'b1;
@@ -280,6 +295,7 @@ pub module flt_vramctrl (
                     }
                 }
             }
+
             if !(RVALID && RREADY) {
                 src_wr_en = 1'b0;
             }
@@ -287,142 +303,139 @@ pub module flt_vramctrl (
     }
 
     // ---------------- WRITE FSM (AW/W/B) ----------------
+    //
+    // ここを徹底的に簡略化：
+    // - 常に AWLEN = 0 (1 beat burst)
+    // - 内部レジスタ WDATA_r / WLAST_r / WVALID_r で保持
+    // - WVALID_r = 1 の間、WREADY=0 なら **一切状態を変えない**
+    //   → AXI4_ERRM_WLAST_STABLE / WVALID_STABLE を確実に満たす
     enum WState {
         idle,
-        addr_prep,
         set_addr,
         write,
         wait,
     }
-    var w_state     : WState    ;
-    var w_addr      : logic <32>;
-    var w_line_rem  : logic <16>;
-    var w_on_txn    : logic     ;
-    var end_of_burst: logic     ;
+    var w_state   : WState    ;
+    var w_addr    : logic <32>;
+    var w_line_rem: logic <16>;
 
-    // latched beats count for the upcoming burst
-    var aw_beats_q: logic<8>;
-    // explicit sent-beat counter within current burst
-    var w_sent        : logic<8>;
-    var w_burst_active: logic   ;
+    // 出力レジスタ
+    var WDATA_r : logic<32>;
+    var WLAST_r : logic    ;
+    var WVALID_r: logic    ;
 
-    var wdata_q      : logic<32>;
-    var wdata_q_valid: logic    ;
+    // FIFO 読み出し制御
+    var wrt_pop_req: logic; // 「次のビートをキューから取りたい」フラグ
 
+    assign WDATA  = WDATA_r;
+    assign WLAST  = WLAST_r;
+    assign WVALID = WVALID_r;
     assign WSTRB  = 4'hF;
     assign BREADY = (w_state == WState::wait);
 
-    var wwant : logic<8>;
-    var wavail: logic<8>;
-
+    // 行の完了判定：書き FSM が idle に戻り、行残りゼロ
     always_comb {
-        let blen8 : logic<8> = BLEN as 8;
-        wwant  = if w_line_rem >: (BLEN as 16) ? blen8 : (w_line_rem as 8);
-        wavail = if (wrt_count[7:0] <: wwant) ? wrt_count[7:0] : wwant;
+        wr_line_done = (w_state == WState::idle) && (line_state == LineState::write) && (w_line_rem == 16'd0);
     }
 
     always_ff {
         if_reset {
-            w_state        = WState::idle;
-            AWADDR         = 32'd0;
-            AWLEN          = 8'd0;
-            AWVALID        = 1'b0;
-            WDATA          = 32'd0;
-            WLAST          = 1'b0;
-            WVALID         = 1'b0;
-            w_addr         = 32'd0;
-            w_line_rem     = 16'd0;
-            w_on_txn       = 1'b0;
-            end_of_burst   = 1'b0;
-            wrt_rd_en      = 1'b0;
-            wdata_q        = 32'd0;
-            wdata_q_valid  = 1'b0;
-            aw_beats_q     = 8'd0;
-            w_sent         = 8'd0;
-            w_burst_active = 1'b0;
+            w_state    = WState::idle;
+            AWADDR     = 32'd0;
+            AWLEN      = 8'd0;
+            AWVALID    = 1'b0;
+            w_addr     = 32'd0;
+            w_line_rem = 16'd0;
+
+            WDATA_r  = 32'd0;
+            WLAST_r  = 1'b0;
+            WVALID_r = 1'b0;
+
+            wrt_rd_en   = 1'b0;
+            wrt_pop_req = 1'b0;
         } else {
-            wrt_rd_en = 1'b0;
-            WLAST     = 1'b0; // default
+            // デフォルト
+            wrt_rd_en   = 1'b0;
+            wrt_pop_req = 1'b0;
 
             case w_state {
                 WState::idle: {
-                    WVALID         = 1'b0;
-                    end_of_burst   = 1'b0;
-                    w_on_txn       = 1'b0;
-                    wdata_q_valid  = 1'b0;
-                    w_burst_active = 1'b0;
-                    w_sent         = 8'd0;
+                    // 出力レジスタは idle でクリアしておく
+                    WVALID_r = 1'b0;
+                    WLAST_r  = 1'b0;
+
                     if line_state == LineState::write {
                         w_addr     = FLTRG_VRAMFRM + (line_bytes * line_index);
                         w_line_rem = width;
-                        w_state    = WState::addr_prep;
+                        w_state    = WState::set_addr;
                     }
                 }
-                WState::addr_prep: {
-                    if (w_line_rem != 0) && (wrt_count != 12'd0) {
-                        if (wavail != 8'd0) {
-                            aw_beats_q = wavail; // latch beats count
-                            AWADDR     = w_addr;
-                            AWLEN      = wavail - 1; // beats-1
-                            w_state    = WState::set_addr; // next: assert AWVALID
-                        }
-                    }
-                }
+
                 WState::set_addr: {
-                    AWVALID = 1'b1; // AWLEN stable for 1 cycle before assertion
+                    // 書き出す画素が残っていて、wrt FIFO に 1 ワード以上あるときだけ AW を発行
+                    if (w_line_rem != 0) && (wrt_count != 12'd0) && (AWVALID == 1'b0) {
+                        AWADDR  = w_addr;
+                        AWLEN   = 8'd0; // 1 beat burst
+                        AWVALID = 1'b1;
+                    }
+
                     if AWVALID && AWREADY {
-                        AWVALID        = 1'b0;
-                        w_on_txn       = 1'b1;
-                        w_burst_active = 1'b1;
-                        w_sent         = 8'd0; // start counting
-                        w_addr         = w_addr + ((aw_beats_q as 32) << 2);
-                        w_line_rem     = w_line_rem - (aw_beats_q as 16);
-                        wrt_rd_en      = 1'b1; // prefetch first beat
-                        w_state        = WState::write;
+                        AWVALID = 1'b0;
+                        // 今回の 1 ワードのアドレス更新
+                        w_addr     = w_addr + 32'd4;
+                        w_line_rem = w_line_rem - 16'd1;
+
+                        // 次のサイクルでキューから 1 ワード取りたい
+                        wrt_pop_req = 1'b1;
+                        w_state     = WState::write;
                     }
                 }
+
                 WState::write: {
-                    if !wdata_q_valid && wrt_valid {
-                        wdata_q       = wrt_dout;
-                        wdata_q_valid = 1'b1;
+                    // --- FIFO から 1 ワード読み込む ---
+                    // まだ WVALID_r=0 なら、キューから新しいデータを取り込む
+                    if !WVALID_r {
+                        // 直前サイクルで pop_req を出していれば、valid にデータが乗ってくる想定
+                        if wrt_valid {
+                            WDATA_r  = wrt_dout;
+                            WLAST_r  = 1'b1; // 常に 1 ビートなので必ず last
+                            WVALID_r = 1'b1; // ここから WVALID=1 になる
+                        } else if !wrt_empty {
+                            // valid が出ていない場合は rd_en を出して次のサイクルを待つ
+                            wrt_rd_en = 1'b1;
+                        }
                     }
 
-                    // WLAST when next accepted beat will be the last of this burst
-                    let last_cond: logic = (w_burst_active == 1'b1) && (wdata_q_valid == 1'b1) && (w_sent == (aw_beats_q - 1));
-                    WDATA     = wdata_q;
-                    WVALID    = (w_burst_active == 1'b1) && (wdata_q_valid == 1'b1) && (end_of_burst == 1'b0);
-                    WLAST     = last_cond;
+                    // --- W チャネル出力 ---
+                    // ここで WVALID_r=1 になったら、WREADY=0 の間は **絶対に変更しない**
+                    if WVALID_r {
+                        if WREADY {
+                            // ハンドシェイク成立：このビートを消費
+                            WVALID_r = 1'b0;
+                            WLAST_r  = 1'b0;
 
-                    if WVALID && WREADY {
-                        // consume this beat
-                        wdata_q_valid = 1'b0;
-                        // prefetch next unless this beat was the last
-                        wrt_rd_en = !WLAST;
-                        // increment sent counter *after* using last_cond
-                        if !WLAST {
-                            w_sent = w_sent + 1;
+                            // このバーストは 1 ビート固定なので、すぐ B を待つ
+                            w_state = WState::wait;
                         } else {
-                            end_of_burst   = 1'b1; // wait for BRESP
-                            w_on_txn       = 1'b0;
-                            w_burst_active = 1'b0;
-                            w_state        = WState::wait;
+                            // WREADY=0 の間は何もしない:
+                            // WDATA_r / WLAST_r / WVALID_r はそのまま保持される
                         }
                     }
                 }
+
                 WState::wait: {
+                    // B レスポンスを待つ
                     if BVALID && BREADY {
-                        end_of_burst = 1'b0;
-                        if (w_line_rem == 0) && (wrt_count == 0) && (wdata_q_valid == 1'b0) {
-                            w_state = WState::idle; // line complete
+                        if (w_line_rem == 16'd0) {
+                            // 行の書き込み完了
+                            w_state = WState::idle;
                         } else {
-                            w_state = WState::addr_prep; // next burst
+                            // まだ行の中に書き出す画素がある → 次の 1 ビート AW 発行へ
+                            w_state = WState::set_addr;
                         }
                     }
                 }
             }
         }
     }
-
-    // write-line done when FSM returns idle while line_state=write
-    let wr_line_done: logic = (w_state == WState::idle) && (line_state == LineState::write);
 }
