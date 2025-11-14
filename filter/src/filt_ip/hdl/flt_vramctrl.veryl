@@ -1,12 +1,12 @@
-// ============================== flt_vramctrl.veryl (corrected v4 - AWLEN handshake safe) ==============================
+// ============================== flt_vramctrl.veryl (corrected v5 - beats counter & Veryl ops) ==============================
 /// VRAM Control (Veryl, line-based; AXI4 32-bit/pixel)
 ///
-/// v4 fixes:
-/// - **AWLEN same-cycle handshake hazard**: introduce `addr_prep` stage and latch `aw_beats_q`.
-///   Now AWLEN is stable for at least 1 cycle before asserting AWVALID. On handshake we use
-///   `aw_beats_q` (beats count) instead of `AWLEN+1`. This avoids the classic "expected N got 1" error.
-/// - Keep previous v3 fixes (RREADY=1 during burst, AR space gating, src_rd_en = !empty, etc.).
-/// - Veryl syntax compliant (`as <bits>`, `<:`/`:>`, ternary `if` form, `var` for mutables).
+/// v5 changes:
+/// - Fix remaining VIP error "Expected N beats got 1" by **counting W beats explicitly** (`w_sent`)
+///   and generating `WLAST` when `w_sent == aw_beats_q-1`. No reliance on `w_beats_rem`.
+/// - Keep **AWLEN handshake safe** via `addr_prep`→`set_addr` (AWLEN stable before AWVALID).
+/// - Respect Veryl syntax: `_ default`, `as <bits>`, `?:`, and `>:` / `<:` operators.
+/// - READ side unchanged (RREADY=1 during burst; AR throttled by FIFO space).
 pub module flt_vramctrl (
     CLK : input clock,
     ARST: input reset,
@@ -113,7 +113,6 @@ pub module flt_vramctrl (
     assign FLTVC_BUSY = (line_state != LineState::idle);
 
     var rd_line_done: logic;
-    var wr_line_done: logic;
 
     always_ff {
         if_reset {
@@ -217,7 +216,7 @@ pub module flt_vramctrl (
 
     always_comb {
         let blen8       : logic<8> = BLEN as 8;
-        want8        = if r_line_rem >: BLEN as 16 ? blen8 : (r_line_rem as 8);
+        want8        = if r_line_rem >: (BLEN as 16) ? blen8 : (r_line_rem as 8);
         need_space32 = (want8 as 32) + (SRC_SAFE_GAP as 32);
         avail32      = (FIFO_DEPTH as 32) - (src_count as 32);
         space_ok     = (avail32 >: need_space32) || (avail32 == need_space32);
@@ -257,14 +256,14 @@ pub module flt_vramctrl (
                     if ARVALID && ARREADY {
                         ARVALID     = 1'b0;
                         r_inflight  = 1'b1;
-                        r_beats_rem = want8; // use want8 (latched combo), not ARLEN+1
+                        r_beats_rem = want8; // use combo-latched want8
                         r_addr      = r_addr + ((want8 as 32) << 2);
                         r_line_rem  = r_line_rem - (want8 as 16);
                         r_state     = RState::read;
                     }
                 }
                 RState::read: {
-                    RREADY = 1'b1; // keep forward progress
+                    RREADY = 1'b1; // keep progress
                     if RVALID && RREADY {
                         r_beats_rem = r_beats_rem - 1;
                         src_wr_en   = 1'b1;
@@ -288,7 +287,6 @@ pub module flt_vramctrl (
     }
 
     // ---------------- WRITE FSM (AW/W/B) ----------------
-    // add addr_prep stage to avoid AWLEN same-cycle hazard
     enum WState {
         idle,
         addr_prep,
@@ -299,15 +297,17 @@ pub module flt_vramctrl (
     var w_state     : WState    ;
     var w_addr      : logic <32>;
     var w_line_rem  : logic <16>;
-    var w_beats_rem : logic <8> ;
     var w_on_txn    : logic     ;
     var end_of_burst: logic     ;
 
-    var wdata_q      : logic<32>;
-    var wdata_q_valid: logic    ;
-
     // latched beats count for the upcoming burst
     var aw_beats_q: logic<8>;
+    // explicit sent-beat counter within current burst
+    var w_sent        : logic<8>;
+    var w_burst_active: logic   ;
+
+    var wdata_q      : logic<32>;
+    var wdata_q_valid: logic    ;
 
     assign WSTRB  = 4'hF;
     assign BREADY = (w_state == WState::wait);
@@ -316,40 +316,42 @@ pub module flt_vramctrl (
     var wavail: logic<8>;
 
     always_comb {
-        let blen8       : logic<8> = BLEN as 8;
-        wwant        = if w_line_rem >: BLEN as 16 ? blen8 : (w_line_rem as 8);
-        wavail       = if (wrt_count[7:0] <: wwant) ? wrt_count[7:0] : wwant;
-        wr_line_done = (w_state == WState::idle) && (line_state == LineState::write);
+        let blen8 : logic<8> = BLEN as 8;
+        wwant  = if w_line_rem >: (BLEN as 16) ? blen8 : (w_line_rem as 8);
+        wavail = if (wrt_count[7:0] <: wwant) ? wrt_count[7:0] : wwant;
     }
 
     always_ff {
         if_reset {
-            w_state       = WState::idle;
-            AWADDR        = 32'd0;
-            AWLEN         = 8'd0;
-            AWVALID       = 1'b0;
-            WDATA         = 32'd0;
-            WLAST         = 1'b0;
-            WVALID        = 1'b0;
-            w_addr        = 32'd0;
-            w_line_rem    = 16'd0;
-            w_beats_rem   = 8'd0;
-            w_on_txn      = 1'b0;
-            end_of_burst  = 1'b0;
-            wrt_rd_en     = 1'b0;
-            wdata_q       = 32'd0;
-            wdata_q_valid = 1'b0;
-            aw_beats_q    = 8'd0;
+            w_state        = WState::idle;
+            AWADDR         = 32'd0;
+            AWLEN          = 8'd0;
+            AWVALID        = 1'b0;
+            WDATA          = 32'd0;
+            WLAST          = 1'b0;
+            WVALID         = 1'b0;
+            w_addr         = 32'd0;
+            w_line_rem     = 16'd0;
+            w_on_txn       = 1'b0;
+            end_of_burst   = 1'b0;
+            wrt_rd_en      = 1'b0;
+            wdata_q        = 32'd0;
+            wdata_q_valid  = 1'b0;
+            aw_beats_q     = 8'd0;
+            w_sent         = 8'd0;
+            w_burst_active = 1'b0;
         } else {
             wrt_rd_en = 1'b0;
+            WLAST     = 1'b0; // default
 
             case w_state {
                 WState::idle: {
-                    WVALID        = 1'b0;
-                    WLAST         = 1'b0;
-                    end_of_burst  = 1'b0;
-                    w_on_txn      = 1'b0;
-                    wdata_q_valid = 1'b0;
+                    WVALID         = 1'b0;
+                    end_of_burst   = 1'b0;
+                    w_on_txn       = 1'b0;
+                    wdata_q_valid  = 1'b0;
+                    w_burst_active = 1'b0;
+                    w_sent         = 8'd0;
                     if line_state == LineState::write {
                         w_addr     = FLTRG_VRAMFRM + (line_bytes * line_index);
                         w_line_rem = width;
@@ -357,7 +359,6 @@ pub module flt_vramctrl (
                     }
                 }
                 WState::addr_prep: {
-                    // decide beats and program AWADDR/AWLEN, but DO NOT assert AWVALID yet
                     if (w_line_rem != 0) && (wrt_count != 12'd0) {
                         if (wavail != 8'd0) {
                             aw_beats_q = wavail; // latch beats count
@@ -368,15 +369,16 @@ pub module flt_vramctrl (
                     }
                 }
                 WState::set_addr: {
-                    AWVALID = 1'b1; // AWLEN stable for 1 cycle before this assertion
+                    AWVALID = 1'b1; // AWLEN stable for 1 cycle before assertion
                     if AWVALID && AWREADY {
-                        AWVALID     = 1'b0;
-                        w_on_txn    = 1'b1;
-                        w_beats_rem = aw_beats_q; // use latched beats
-                        w_addr      = w_addr + ((aw_beats_q as 32) << 2);
-                        w_line_rem  = w_line_rem - (aw_beats_q as 16);
-                        wrt_rd_en   = 1'b1; // prefetch first beat
-                        w_state     = WState::write;
+                        AWVALID        = 1'b0;
+                        w_on_txn       = 1'b1;
+                        w_burst_active = 1'b1;
+                        w_sent         = 8'd0; // start counting
+                        w_addr         = w_addr + ((aw_beats_q as 32) << 2);
+                        w_line_rem     = w_line_rem - (aw_beats_q as 16);
+                        wrt_rd_en      = 1'b1; // prefetch first beat
+                        w_state        = WState::write;
                     }
                 }
                 WState::write: {
@@ -384,32 +386,43 @@ pub module flt_vramctrl (
                         wdata_q       = wrt_dout;
                         wdata_q_valid = 1'b1;
                     }
-                    WDATA  = wdata_q;
-                    WVALID = wdata_q_valid && !end_of_burst;
-                    WLAST  = (w_beats_rem == 8'd1) && wdata_q_valid;
+
+                    // WLAST when next accepted beat will be the last of this burst
+                    let last_cond: logic = (w_burst_active == 1'b1) && (wdata_q_valid == 1'b1) && (w_sent == (aw_beats_q - 1));
+                    WDATA     = wdata_q;
+                    WVALID    = (w_burst_active == 1'b1) && (wdata_q_valid == 1'b1) && (end_of_burst == 1'b0);
+                    WLAST     = last_cond;
 
                     if WVALID && WREADY {
+                        // consume this beat
                         wdata_q_valid = 1'b0;
-                        wrt_rd_en     = !WLAST; // fetch next unless last
-                        w_beats_rem   = w_beats_rem - 1;
-                        if WLAST {
-                            end_of_burst = 1'b1;
-                            w_on_txn     = 1'b0;
-                            w_state      = WState::wait;
+                        // prefetch next unless this beat was the last
+                        wrt_rd_en = !WLAST;
+                        // increment sent counter *after* using last_cond
+                        if !WLAST {
+                            w_sent = w_sent + 1;
+                        } else {
+                            end_of_burst   = 1'b1; // wait for BRESP
+                            w_on_txn       = 1'b0;
+                            w_burst_active = 1'b0;
+                            w_state        = WState::wait;
                         }
                     }
                 }
                 WState::wait: {
                     if BVALID && BREADY {
                         end_of_burst = 1'b0;
-                        if (w_line_rem == 0) && (wrt_count == 0) && !wdata_q_valid {
-                            w_state = WState::idle;
+                        if (w_line_rem == 0) && (wrt_count == 0) && (wdata_q_valid == 1'b0) {
+                            w_state = WState::idle; // line complete
                         } else {
-                            w_state = WState::addr_prep;
+                            w_state = WState::addr_prep; // next burst
                         }
                     }
                 }
             }
         }
     }
+
+    // write-line done when FSM returns idle while line_state=write
+    let wr_line_done: logic = (w_state == WState::idle) && (line_state == LineState::write);
 }
