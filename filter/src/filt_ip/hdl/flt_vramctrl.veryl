@@ -1,14 +1,12 @@
-// ============================== flt_vramctrl.veryl (corrected v3 - Veryl syntax compliant) ==============================
+// ============================== flt_vramctrl.veryl (corrected v4 - AWLEN handshake safe) ==============================
 /// VRAM Control (Veryl, line-based; AXI4 32-bit/pixel)
 ///
-/// - AR is issued only when FIFO has enough space; during an R-burst keep RREADY=1.
-/// - VALID is held until READY on all channels (no drops). No `initial`.
-/// - src FIFO drains whenever non-empty (not gated by line state).
-/// - This version follows the user's Veryl style notes:
-///   * `var` for mutable signals like `rd_line_done`
-///   * no `.resize` (use `as <N>` casts)
-///   * ternary `if cond ? a : b`
-///   * comparisons use `<:` `:>`
+/// v4 fixes:
+/// - **AWLEN same-cycle handshake hazard**: introduce `addr_prep` stage and latch `aw_beats_q`.
+///   Now AWLEN is stable for at least 1 cycle before asserting AWVALID. On handshake we use
+///   `aw_beats_q` (beats count) instead of `AWLEN+1`. This avoids the classic "expected N got 1" error.
+/// - Keep previous v3 fixes (RREADY=1 during burst, AR space gating, src_rd_en = !empty, etc.).
+/// - Veryl syntax compliant (`as <bits>`, `<:`/`:>`, ternary `if` form, `var` for mutables).
 pub module flt_vramctrl (
     CLK : input clock,
     ARST: input reset,
@@ -60,7 +58,6 @@ pub module flt_vramctrl (
     FLTVC_BUSY: output logic,
     FLTVC_INT : output logic,
 ) {
-    // unified synchronous-high reset
     let rst: '_ default reset_sync_high = ARST | RSTS;
 
     const BLEN        : u32 = 16; // beats per burst (<=256)
@@ -90,7 +87,7 @@ pub module flt_vramctrl (
             }
         }
     }
-    let line_bytes: logic<32> = {width, 2'b00}; // width * 4
+    let line_bytes: logic<32> = {width, 2'b00};
 
     // ---------------- line manager ----------------
     enum LineState {
@@ -115,7 +112,6 @@ pub module flt_vramctrl (
     var busy_d    : logic;
     assign FLTVC_BUSY = (line_state != LineState::idle);
 
-    // mutable derived flags
     var rd_line_done: logic;
     var wr_line_done: logic;
 
@@ -150,11 +146,10 @@ pub module flt_vramctrl (
     }
 
     // ---------------- FIFOs & filter wiring ----------------
-    // src FIFO (R -> PROC)
     var src_dout : logic<32>;
     var src_empty: logic    ;
     var src_full : logic    ;
-    var src_valid: logic    ; // asserted 1 cycle after rd_en when data is on dout
+    var src_valid: logic    ;
     var src_rd_en: logic    ;
     var src_wr_en: logic    ;
     var src_count: logic<12>;
@@ -174,7 +169,6 @@ pub module flt_vramctrl (
         data_count: src_count,
     );
 
-    // wrt FIFO (PROC -> W)
     var wrt_dout : logic<32>;
     var wrt_empty: logic    ;
     var wrt_full : logic    ;
@@ -216,21 +210,17 @@ pub module flt_vramctrl (
     var r_beats_rem: logic <8> ;
     var r_inflight : logic     ;
 
-    // helpers (combinational)
     var want8       : logic<8> ;
     var need_space32: logic<32>;
     var avail32     : logic<32>;
     var space_ok    : logic    ;
 
     always_comb {
-        // want = min(remain, BLEN)
-        let blen8: logic<8> = BLEN as 8;
-        want8 = if r_line_rem >: BLEN as 16 ? blen8 : (r_line_rem as 8);
-        // space check in 32b domain: avail >= want + GAP
+        let blen8       : logic<8> = BLEN as 8;
+        want8        = if r_line_rem >: BLEN as 16 ? blen8 : (r_line_rem as 8);
         need_space32 = (want8 as 32) + (SRC_SAFE_GAP as 32);
         avail32      = (FIFO_DEPTH as 32) - (src_count as 32);
         space_ok     = (avail32 >: need_space32) || (avail32 == need_space32);
-        // line read complete when counters clear (state independent)
         rd_line_done = (r_line_rem == 16'd0) && (r_inflight == 1'b0) && (r_beats_rem == 8'd0);
     }
 
@@ -261,24 +251,23 @@ pub module flt_vramctrl (
                 RState::set_addr: {
                     if !ARVALID && !r_inflight && (r_line_rem != 0) && space_ok {
                         ARADDR  = r_addr;
-                        ARLEN   = want8 - 1; // beats-1
-                        ARVALID = 1'b1; // hold until ARREADY
+                        ARLEN   = want8 - 1;
+                        ARVALID = 1'b1;
                     }
                     if ARVALID && ARREADY {
                         ARVALID     = 1'b0;
                         r_inflight  = 1'b1;
-                        r_beats_rem = ARLEN + 1;
-                        r_addr      = r_addr + (((ARLEN + 1) as 32) << 2);
-                        r_line_rem  = r_line_rem - (ARLEN + 1);
+                        r_beats_rem = want8; // use want8 (latched combo), not ARLEN+1
+                        r_addr      = r_addr + ((want8 as 32) << 2);
+                        r_line_rem  = r_line_rem - (want8 as 16);
                         r_state     = RState::read;
                     }
                 }
                 RState::read: {
-                    // keep forward progress during burst
-                    RREADY = 1'b1;
+                    RREADY = 1'b1; // keep forward progress
                     if RVALID && RREADY {
                         r_beats_rem = r_beats_rem - 1;
-                        src_wr_en   = 1'b1; // pulse (cleared below)
+                        src_wr_en   = 1'b1;
                         if RLAST || (r_beats_rem == 8'd1) {
                             r_inflight = 1'b0;
                             r_state    = if (r_line_rem != 0) ? RState::set_addr : RState::wait;
@@ -299,8 +288,10 @@ pub module flt_vramctrl (
     }
 
     // ---------------- WRITE FSM (AW/W/B) ----------------
+    // add addr_prep stage to avoid AWLEN same-cycle hazard
     enum WState {
         idle,
+        addr_prep,
         set_addr,
         write,
         wait,
@@ -315,18 +306,19 @@ pub module flt_vramctrl (
     var wdata_q      : logic<32>;
     var wdata_q_valid: logic    ;
 
+    // latched beats count for the upcoming burst
+    var aw_beats_q: logic<8>;
+
     assign WSTRB  = 4'hF;
     assign BREADY = (w_state == WState::wait);
 
-    // helpers for AW sizing
     var wwant : logic<8>;
     var wavail: logic<8>;
 
     always_comb {
-        let blen8 : logic<8> = BLEN as 8;
-        wwant  = if w_line_rem >: BLEN as 16 ? blen8 : (w_line_rem as 8);
-        wavail = if (wrt_count[7:0] <: wwant) ? wrt_count[7:0] : wwant;
-        // line write complete when write FSM returns to idle in write phase
+        let blen8       : logic<8> = BLEN as 8;
+        wwant        = if w_line_rem >: BLEN as 16 ? blen8 : (w_line_rem as 8);
+        wavail       = if (wrt_count[7:0] <: wwant) ? wrt_count[7:0] : wwant;
         wr_line_done = (w_state == WState::idle) && (line_state == LineState::write);
     }
 
@@ -347,6 +339,7 @@ pub module flt_vramctrl (
             wrt_rd_en     = 1'b0;
             wdata_q       = 32'd0;
             wdata_q_valid = 1'b0;
+            aw_beats_q    = 8'd0;
         } else {
             wrt_rd_en = 1'b0;
 
@@ -360,26 +353,30 @@ pub module flt_vramctrl (
                     if line_state == LineState::write {
                         w_addr     = FLTRG_VRAMFRM + (line_bytes * line_index);
                         w_line_rem = width;
-                        w_state    = WState::set_addr;
+                        w_state    = WState::addr_prep;
+                    }
+                }
+                WState::addr_prep: {
+                    // decide beats and program AWADDR/AWLEN, but DO NOT assert AWVALID yet
+                    if (w_line_rem != 0) && (wrt_count != 12'd0) {
+                        if (wavail != 8'd0) {
+                            aw_beats_q = wavail; // latch beats count
+                            AWADDR     = w_addr;
+                            AWLEN      = wavail - 1; // beats-1
+                            w_state    = WState::set_addr; // next: assert AWVALID
+                        }
                     }
                 }
                 WState::set_addr: {
-                    if !AWVALID && !w_on_txn && (w_line_rem != 0) && (wrt_count != 12'd0) {
-                        if (wavail != 8'd0) {
-                            AWADDR  = w_addr;
-                            AWLEN   = wavail - 1; // beats-1
-                            AWVALID = 1'b1; // hold until AWREADY
-                        }
-                    }
+                    AWVALID = 1'b1; // AWLEN stable for 1 cycle before this assertion
                     if AWVALID && AWREADY {
                         AWVALID     = 1'b0;
                         w_on_txn    = 1'b1;
-                        w_beats_rem = AWLEN + 1;
-                        w_addr      = w_addr + (((AWLEN + 1) as 32) << 2);
-                        w_line_rem  = w_line_rem - (AWLEN + 1);
-                        // prefetch first beat
-                        wrt_rd_en = 1'b1;
-                        w_state   = WState::write;
+                        w_beats_rem = aw_beats_q; // use latched beats
+                        w_addr      = w_addr + ((aw_beats_q as 32) << 2);
+                        w_line_rem  = w_line_rem - (aw_beats_q as 16);
+                        wrt_rd_en   = 1'b1; // prefetch first beat
+                        w_state     = WState::write;
                     }
                 }
                 WState::write: {
@@ -396,7 +393,7 @@ pub module flt_vramctrl (
                         wrt_rd_en     = !WLAST; // fetch next unless last
                         w_beats_rem   = w_beats_rem - 1;
                         if WLAST {
-                            end_of_burst = 1'b1; // wait for BRESP
+                            end_of_burst = 1'b1;
                             w_on_txn     = 1'b0;
                             w_state      = WState::wait;
                         }
@@ -406,9 +403,9 @@ pub module flt_vramctrl (
                     if BVALID && BREADY {
                         end_of_burst = 1'b0;
                         if (w_line_rem == 0) && (wrt_count == 0) && !wdata_q_valid {
-                            w_state = WState::idle; // line complete
+                            w_state = WState::idle;
                         } else {
-                            w_state = WState::set_addr; // next burst
+                            w_state = WState::addr_prep;
                         }
                     }
                 }
