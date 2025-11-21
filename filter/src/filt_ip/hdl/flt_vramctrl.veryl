@@ -273,7 +273,6 @@ pub module flt_vramctrl (
                         w_state = State::idle;
                     }
                 }
-                default: {}
             }
         }
     }
