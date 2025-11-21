@@ -99,9 +99,12 @@ pub module flt_vramctrl (
         }
     }
 
+    //-------------------------------------------------------------------------
     // Read Channel FSM
+    //-------------------------------------------------------------------------
     assign src_wr_en = RVALID && RREADY;
 
+    // address
     always_ff {
         if_reset {
             r_addr_current = 32'h0;
@@ -159,7 +162,91 @@ pub module flt_vramctrl (
         }
     }
 
-    // Source data FIDO (R -> PROC)
+    // filter proc
+    assign src_rd_en      = !src_empty && !wrt_full;
+    assign FLTVC_SDATAVLD = src_valid;
+    assign FLTVC_SDATA    = src_dout;
+
+    //-------------------------------------------------------------------------
+    // Write Channel FSM
+    //-------------------------------------------------------------------------
+    assign wrt_wr_en = FLTPC_WDATAVLD;
+
+    assign WSTRB  = 4'b1111;
+    assign BREADY = 1'b1; // always ok
+
+    // address
+    always_ff {
+        if_reset {
+            w_addr_current = 32'h0;
+        } else if FLTRG_START {
+            w_addr_current = FLTRG_VRAMFRM;
+        } else if AWVALID && AWREADY {
+            w_addr_current += BURST_LEN * 4;
+        }
+    }
+
+    // count pixels
+    always_ff {
+        if_reset {
+            w_pix_cnt = 32'h0;
+        } else if FLTRG_START {
+            w_pix_cnt = 32'h0;
+        } else if WVALID && WREADY {
+            w_pix_cnt += 1;
+        }
+    }
+
+    // write FSM
+    always_ff {
+        if_reset {
+            w_state = State::idle;
+            AWVALID = 1'b0;
+            WVALID  = 1'b0;
+            WLAST   = 1'b0;
+        } else {
+            case w_state {
+                State::idle: {
+                    let remain_pix   : logic<32> = total_pixels - w_pix_cnt;
+                    let is_last_burst: logic     = (remain_pix <= BURST_LEN) && (remain_pix >: 0);
+
+                    if FLTVC_BUSY && ((wrt_count >= BURST_LEN) || (is_last_burst && wrt_count >= remain_pix)) {
+                        w_state = State::addr;
+                        AWVALID = 1'b1;
+                        AWADDR  = w_addr_current;
+                        // 端数処理
+                        if remain_pix <: BURST_LEN {
+                            AWLEN = remain_pix[7:0] - 1'b1;
+                        } else {
+                            AWLEN = BURST_VAL;
+                        }
+                    }
+
+                }
+                State::addr: {
+                    if AWREADY {
+                        AWVALID = 1'b0;
+                        w_state = State::data;
+                        WVALID  = 1'b1;
+                    }
+                }
+                State::data: {
+                    // TODO?
+                    if WREADY {
+                        // TODO?
+                    }
+                }
+                State::resp: {
+                    if BVALID {
+                        w_state = State::idle;
+                    }
+                }
+            }
+        }
+    }
+
+
+    // Sourcedata FIDO (R -> PROC)
     var src_dout : logic<32>;
     var src_empty: logic    ;
     var src_full : logic    ;
