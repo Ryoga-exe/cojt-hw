@@ -1,11 +1,18 @@
-/// VRAM Control (Veryl, frame streaming; AXI4 32-bit/pixel)
+/// VRAM Control
 ///
-/// - フレーム全体をストリームとして扱う:
-///   - READ: DDR (FLTRG_VRAMSRC) から src FIFO へフレーム全体を読み出し
-///   - WRITE: flt_proc からのストリーム出力を wrt FIFO 経由で
-///            DDR (FLTRG_VRAMFRM) へ書き戻し
-/// - FLTVC_BUSY: フレーム処理中（start ～ READ 完了 & WRITE 完全アイドル）
-/// - FLTVC_INT : BUSY 立下り 1 パルス
+/// - フレーム全体を 32bit/pixel のストリームとして扱う
+/// - READ:
+///   - FLTRG_VRAMSRC から width*height 個の 32bit を AXI4-Read
+///   - 各 RVALID&RREADY のビートを **そのまま** FLTVC_SDATA/FLTVC_SDATAVLD に出力
+///     → RDATA のビート数と完全に 1:1 対応する
+/// - WRITE:
+///   - flt_proc の出力 FLTPC_WDATA を AXI4-Write で FLTRG_VRAMFRM へ書き戻し
+///   - 1 ビート固定バースト (AWLEN=0) で、WVALID/WLAST をレジスタ保持
+/// - FLTVC_BUSY:
+///   - FLTRG_START 立ち上がりで 1
+///   - フレームの Read/Write が完了したら 0
+/// - FLTVC_INT:
+///   - BUSY の立ち下がりで 1 パルス
 pub module flt_vramctrl (
     CLK : input clock,
     ARST: input reset,
@@ -47,22 +54,20 @@ pub module flt_vramctrl (
     FLTRG_VRAMSRC: input logic<32>,
     FLTRG_VRAMFRM: input logic<32>,
 
-    // Filter I/F
+    // Filter I/F (to/from flt_proc)
     FLTPC_WDATAVLD: input logic    ,
     FLTPC_WDATA   : input logic<32>,
 
-    // to filter
     FLTVC_SDATAVLD: output logic    ,
     FLTVC_SDATA   : output logic<32>,
 
     FLTVC_BUSY: output logic,
     FLTVC_INT : output logic,
 ) {
-    // unified synchronous-high reset
+    // unified synchronous-high reset（ARST or RSTS）
     let rst: '_ default reset_sync_high = ARST | RSTS;
 
-    const BLEN      : u32 = 16; // READ 側の最大バースト長（beats）
-    const FIFO_DEPTH: u32 = 2048; // src/wrt FIFO の深さ（IP に合わせる）
+    const BLEN: u32 = 16; // READ 側の最大バースト長
 
     // ---------------- geometry ----------------
     var width : logic<16>;
@@ -88,7 +93,7 @@ pub module flt_vramctrl (
         }
     }
 
-    // フレーム総ピクセル数（= 32bit ワード数）
+    // フレーム総ピクセル数（=32bit ワード数）
     let frame_pixels: logic<32> = (width as 32) * (height as 32);
 
     // ---------------- start / BUSY / INT ----------------
@@ -106,7 +111,7 @@ pub module flt_vramctrl (
 
     let start_pulse: logic = FLTRG_START & ~start_q;
 
-    // read_done / write_done は後ろで always_comb で計算
+    // read/write の完了フラグ（後ろで決める）
     var read_done : logic;
     var write_done: logic;
 
@@ -120,241 +125,160 @@ pub module flt_vramctrl (
         } else {
             busy_d = frame_active;
 
-            // 新しいフレーム開始（BUSY=0 のときだけ扱う前提）
+            // フレーム開始
             if start_pulse && (frame_active == 1'b0) {
                 frame_active = 1'b1;
             } else if frame_active && read_done && write_done {
                 frame_active = 1'b0;
             }
 
-            // BUSY 立下りで INT 1 パルス
+            // BUSY 立ち下がりで INT
             FLTVC_INT = (busy_d == 1'b1) && (frame_active == 1'b0);
         }
     }
 
-    // ---------------- FIFOs & filter wiring ----------------
-    // src FIFO (R -> PROC)
-    var src_dout : logic<32>;
-    var src_empty: logic    ;
-    var src_full : logic    ;
-    var src_valid: logic    ;
-    var src_rd_en: logic    ;
-    var src_wr_en: logic    ;
-    var src_count: logic<12>;
-
-    inst u_fifo_src: $sv::fifo_32in32out_2048depth (
-        clk       : CLK      ,
-        din       : RDATA    ,
-        rd_en     : src_rd_en,
-        rst       : rst      ,
-        wr_en     : src_wr_en,
-        dout      : src_dout ,
-        empty     : src_empty,
-        full      : src_full ,
-        overflow  : _        ,
-        valid     : src_valid,
-        underflow : _        ,
-        data_count: src_count,
-    );
-
-    // wrt FIFO (PROC -> W)
-    var wrt_dout : logic<32>;
-    var wrt_empty: logic    ;
-    var wrt_full : logic    ;
-    var wrt_valid: logic    ;
-    var wrt_rd_en: logic    ;
-    var wrt_wr_en: logic    ;
-    var wrt_count: logic<12>;
-
-    inst u_fifo_wrt: $sv::fifo_32in32out_2048depth (
-        clk       : CLK        ,
-        din       : FLTPC_WDATA,
-        rd_en     : wrt_rd_en  ,
-        rst       : rst        ,
-        wr_en     : wrt_wr_en  ,
-        dout      : wrt_dout   ,
-        empty     : wrt_empty  ,
-        full      : wrt_full   ,
-        overflow  : _          ,
-        valid     : wrt_valid  ,
-        underflow : _          ,
-        data_count: wrt_count  ,
-    );
-
-    // filter への入力
-    assign FLTVC_SDATA    = src_dout;
-    assign FLTVC_SDATAVLD = src_valid; // dout valid = rd_en の 1 サイクル後想定
-    assign src_rd_en      = (!src_empty); // データがある限りストリームで供給
-    assign wrt_wr_en      = FLTPC_WDATAVLD; // フィルタ出力を FIFO へ
-
     // =====================================================
-    // READ FSM (AR/R) - フレーム全体を読む
+    // READ: AXI AR/R → FLTVC_SDATA/SDATAVLD（ストリーム）
     // =====================================================
-
-    // AR チャネル用レジスタ（ARLEN_STABLE 対策）
-    var ar_addr_q : logic<32>;
-    var ar_len_q  : logic<8> ;
-    var ar_valid_q: logic    ;
-
-    assign ARADDR  = ar_addr_q;
-    assign ARLEN   = ar_len_q;
-    assign ARVALID = ar_valid_q;
-
     enum RState {
         idle,
-        issue, // AR を発行
-        wait, // R データ受信
+        set_addr,
+        read,
     }
 
     var r_state     : RState    ;
-    var r_addr      : logic <32>; // 現在の読み出しアドレス
-    var r_pixels_rem: logic <32>; // フレーム内の残りピクセル数
-    var r_burst_rem : logic <8> ; // 現在バーストの残りビート数
+    var r_addr      : logic <32>;
+    var r_pixels_rem: logic <32>; // 残りピクセル数（=残り 32bit ワード数）
+    var r_beats_rem : logic <8> ; // 現在のバースト残りビート数
+    var r_inflight  : logic     ; // R チャネルで未完了のバーストがあるか
 
+    var want8: logic<8>; // 次のバーストで取りたいビート数
+
+    // want8 の決定と read_done 判定
     always_comb {
-        // フレーム読み出し完了:
-        // - すべてのピクセル読み終え (`r_pixels_rem == 0`)
-        // - FSM idle
+        let blen8 : logic<8>  = BLEN as 8;
+        let blen32: logic<32> = BLEN as 32;
+
+        if r_pixels_rem >: blen32 {
+            want8 = blen8;
+        } else if r_pixels_rem != 0 {
+            want8 = r_pixels_rem[7:0];
+        } else {
+            want8 = 8'd0;
+        }
+
+        // 読み出し完了条件:
+        // - 残りピクセルが 0
+        // - FSM が idle（追加の AR/R はもうない）
         read_done = (r_pixels_rem == 32'd0) && (r_state == RState::idle);
     }
 
     always_ff {
         if_reset {
-            // AR レジスタ
-            ar_addr_q  = 32'd0;
-            ar_len_q   = 8'd0;
-            ar_valid_q = 1'b0;
+            ARADDR  = 32'd0;
+            ARLEN   = 8'd0;
+            ARVALID = 1'b0;
+            RREADY  = 1'b0;
 
-            // READ FSM
             r_state      = RState::idle;
             r_addr       = 32'd0;
             r_pixels_rem = 32'd0;
-            r_burst_rem  = 8'd0;
+            r_beats_rem  = 8'd0;
+            r_inflight   = 1'b0;
 
-            RREADY    = 1'b0;
-            src_wr_en = 1'b0;
+            FLTVC_SDATA    = 32'd0;
+            FLTVC_SDATAVLD = 1'b0;
         } else {
             // デフォルト
-            RREADY    = 1'b0;
-            src_wr_en = 1'b0;
+            RREADY         = 1'b0;
+            FLTVC_SDATAVLD = 1'b0;
 
             case r_state {
-                // ----------------------------------------
-                // フレーム開始待ち
-                // ----------------------------------------
                 RState::idle: {
+                    ARVALID = 1'b0;
+
+                    // フレーム開始時に初期化
                     if start_pulse {
                         r_addr       = FLTRG_VRAMSRC;
                         r_pixels_rem = frame_pixels;
-                        r_burst_rem  = 8'd0;
-                        ar_valid_q   = 1'b0;
-                        r_state      = RState::issue;
+                        r_beats_rem  = 8'd0;
+                        r_inflight   = 1'b0;
+                        r_state      = RState::set_addr;
                     }
                 }
 
-                // ----------------------------------------
-                // AR を発行（または、読み終わり判定）
-                // ----------------------------------------
-                RState::issue: {
-                    // 残りが 0 で、未発行の AR もなく、バースト残も 0 → 完了
-                    if (r_pixels_rem == 32'd0) && (ar_valid_q == 1'b0) && (r_burst_rem == 8'd0) {
+                RState::set_addr: {
+                    if r_pixels_rem == 32'd0 {
+                        // もう読むものはない
+                        ARVALID = 1'b0;
                         r_state = RState::idle;
                     } else {
-                        // まだ残りがあり、かつ AR 未発行なら新しいバーストを準備
-                        if (ar_valid_q == 1'b0) && (r_pixels_rem != 32'd0) {
-                            var burst: logic<8>;
-
-                            // 今回のバースト長（最大 BLEN=16）
-                            if r_pixels_rem >: (BLEN as 32) {
-                                burst = BLEN as 8;
-                            } else {
-                                burst = r_pixels_rem[7:0];
-                            }
-
-                            // AR レジスタに格納
-                            // → ar_valid_q==1 の間は変えないので ARLEN_STABLE を満たす
-                            ar_addr_q  = r_addr;
-                            ar_len_q   = burst - 8'd1; // beats-1
-                            ar_valid_q = 1'b1;
+                        // バースト要求
+                        if !ARVALID && !r_inflight && (want8 != 8'd0) {
+                            ARADDR  = r_addr;
+                            ARLEN   = want8 - 8'd1; // beats-1
+                            ARVALID = 1'b1;
                         }
 
-                        // ハンドシェイク成立時にのみ、残りカウンタを更新
-                        if (ar_valid_q == 1'b1) && (ARREADY == 1'b1) {
-                            ar_valid_q = 1'b0;
+                        if ARVALID && ARREADY {
+                            ARVALID     = 1'b0;
+                            r_inflight  = 1'b1;
+                            r_beats_rem = want8;
 
-                            // beats = ARLEN+1
-                            var beats  : logic<8> ;
-                            var beats32: logic<32>;
-
-                            beats   = ar_len_q + 8'd1;
-                            beats32 = {24'd0, beats};
-
-                            r_burst_rem  = beats;
+                            let beats32     : logic<32> = want8 as 32;
                             r_addr       = r_addr + (beats32 << 2); // 4byte/beat
                             r_pixels_rem = r_pixels_rem - beats32;
 
-                            r_state = RState::wait;
+                            r_state = RState::read;
                         }
                     }
                 }
 
-                // ----------------------------------------
-                // R データ受信
-                // ----------------------------------------
-                RState::wait: {
-                    // FIFO フルなら止める（forward progress 用に基本は 1）
-                    RREADY = (src_full == 1'b0);
+                RState::read: {
+                    // バースト中は常に受け付ける
+                    RREADY = 1'b1;
 
-                    if (RVALID == 1'b1) && (RREADY == 1'b1) {
-                        src_wr_en = 1'b1;
+                    if RVALID && RREADY {
+                        // RDATA 1 ビートをそのままフィルタへ
+                        FLTVC_SDATA    = RDATA;
+                        FLTVC_SDATAVLD = 1'b1;
 
-                        if r_burst_rem != 8'd0 {
-                            r_burst_rem = r_burst_rem - 8'd1;
-                        }
+                        r_beats_rem = r_beats_rem - 8'd1;
 
-                        // バースト終端（RLAST or 残り1ビート）
-                        if (RLAST == 1'b1) || (r_burst_rem == 8'd1) {
-                            if (r_pixels_rem == 32'd0) {
-                                // フレームの読み出しが終わった
-                                r_state = RState::idle;
+                        if RLAST || (r_beats_rem == 8'd1) {
+                            r_inflight = 1'b0;
+
+                            if r_pixels_rem != 32'd0 {
+                                r_state = RState::set_addr;
                             } else {
-                                // まだ読むものがあるので次の AR を発行
-                                r_state = RState::issue;
+                                r_state = RState::idle;
                             }
                         }
                     }
                 }
-            }
-
-            // frame_active が 0 になったら READ FSM を初期化しておく（保険）
-            if !frame_active {
-                RREADY       = 1'b0;
-                ar_valid_q   = 1'b0;
-                r_state      = RState::idle;
-                r_pixels_rem = 32'd0;
-                r_burst_rem  = 8'd0;
             }
         }
     }
 
     // =====================================================
-    // WRITE FSM (AW/W/B, 1-beat bursts)
+    // WRITE: flt_proc 出力 → AXI AW/W/B（1 beat bursts）
     // =====================================================
     //
-    // - 常に AWLEN = 0 (1 beat burst)
-    // - 出力レジスタ WDATA_r / WLAST_r / WVALID_r で保持
-    // - WVALID_r == 1 && WREADY == 0 の間は一切変更しない（AXI 規約順守）
-
+    // - FLTPC_WDATA/WDATAVLD を AXI Write で書き戻す
+    // - AWLEN = 0 (1 ビートバースト固定)
+    // - WDATA / WVALID / WLAST はレジスタ WDATA_r / WVALID_r / WLAST_r で保持
+    // - WVALID_r == 1 && WREADY == 0 の間は一切変えない（WLAST 安定条件を満たす）
     enum WState {
         idle,
-        addr,
-        data,
-        resp,
+        set_addr,
+        write,
+        wait_b,
     }
 
-    var w_state     : WState    ;
-    var w_addr      : logic <32>;
-    var w_pixels_rem: logic <32>;
+    var w_state      : WState    ;
+    var w_addr       : logic <32>;
+    var w_pixels_rem : logic <32>; // まだ書くべきピクセル数
+    var w_pixels_sent: logic <32>; // 実際に書いたピクセル数
 
     // 出力レジスタ
     var WDATA_r : logic<32>;
@@ -365,56 +289,47 @@ pub module flt_vramctrl (
     assign WLAST  = WLAST_r;
     assign WVALID = WVALID_r;
     assign WSTRB  = 4'hF;
-    assign BREADY = (w_state == WState::resp);
+    assign BREADY = (w_state == WState::wait_b);
 
-    // write_done は「FSM idle & FIFO 空 & 出力レジスタも idle & AWVALID=0」で判定
+    // write_done 判定（「送るべきピクセル数を書き終えた」）
     always_comb {
-        write_done = (w_state == WState::idle) && (wrt_count == 12'd0) && (WVALID_r == 1'b0) && (AWVALID == 1'b0);
+        write_done = (w_pixels_rem == 32'd0) && (w_state == WState::idle) && (WVALID_r == 1'b0) && (AWVALID == 1'b0);
     }
 
     always_ff {
         if_reset {
-            w_state      = WState::idle;
-            AWADDR       = 32'd0;
-            AWLEN        = 8'd0;
-            AWVALID      = 1'b0;
-            w_addr       = 32'd0;
-            w_pixels_rem = 32'd0;
+            w_state       = WState::idle;
+            AWADDR        = 32'd0;
+            AWLEN         = 8'd0;
+            AWVALID       = 1'b0;
+            w_addr        = 32'd0;
+            w_pixels_rem  = 32'd0;
+            w_pixels_sent = 32'd0;
 
             WDATA_r  = 32'd0;
             WLAST_r  = 1'b0;
             WVALID_r = 1'b0;
-
-            wrt_rd_en = 1'b0;
         } else {
-            // デフォルト
-            wrt_rd_en = 1'b0;
-
             case w_state {
-                // ----------------------------------------
-                // idle: フレーム開始待ち or フレーム中に FIFO を監視
-                // ----------------------------------------
                 WState::idle: {
-                    // 出力レジスタは idle でクリアしておく
-                    WVALID_r = 1'b0;
-                    WLAST_r  = 1'b0;
+                    // 出力レジスタは idle でクリア（WVALID は 0 のまま）
+                    WLAST_r = 1'b0;
 
+                    // フレーム開始時に初期化
                     if start_pulse {
-                        // フレーム開始時にベースアドレスと残りピクセル数をセット
-                        w_addr       = FLTRG_VRAMFRM;
-                        w_pixels_rem = frame_pixels;
+                        w_addr        = FLTRG_VRAMFRM;
+                        w_pixels_rem  = frame_pixels;
+                        w_pixels_sent = 32'd0;
                     }
 
-                    // フレームアクティブ中で書くべきデータがあれば addr へ
-                    if frame_active && (w_pixels_rem != 32'd0) && (wrt_count != 12'd0) {
-                        w_state = WState::addr;
+                    // フレームアクティブ & 書くべきピクセルが残っていて
+                    // かつ flt_proc からのデータが存在する場合に書き込み開始
+                    if frame_active && (w_pixels_rem != 32'd0) && FLTPC_WDATAVLD {
+                        w_state = WState::set_addr;
                     }
                 }
 
-                // ----------------------------------------
-                // addr: AW を 1beat 分出す
-                // ----------------------------------------
-                WState::addr: {
+                WState::set_addr: {
                     if !frame_active {
                         AWVALID = 1'b0;
                         w_state = WState::idle;
@@ -422,80 +337,60 @@ pub module flt_vramctrl (
                         AWVALID = 1'b0;
                         w_state = WState::idle;
                     } else {
-                        // FIFO に 1 ワード以上あって、まだ AW を出していないなら発行
-                        if (wrt_count != 12'd0) && (AWVALID == 1'b0) {
+                        if AWVALID == 1'b0 {
                             AWADDR  = w_addr;
                             AWLEN   = 8'd0; // 1 beat burst
                             AWVALID = 1'b1;
                         }
 
-                        if (AWVALID == 1'b1) && (AWREADY == 1'b1) {
+                        if AWVALID && AWREADY {
                             AWVALID = 1'b0;
-                            w_addr  = w_addr + 32'd4; // 次のピクセルへ
-                            w_state = WState::data;
+                            // 次のワード用にアドレスを進めておく
+                            w_addr = w_addr + 32'd4;
+
+                            // 今回書くデータをキャプチャ
+                            // （set_addr に入る条件で FLTPC_WDATAVLD==1 を保証）
+                            WDATA_r  = FLTPC_WDATA;
+                            WLAST_r  = 1'b1;
+                            WVALID_r = 1'b1;
+
+                            w_state = WState::write;
                         }
                     }
                 }
 
-                // ----------------------------------------
-                // data: 1beat の W を出す
-                // ----------------------------------------
-                WState::data: {
-                    // まだ WVALID_r=0 なら、FIFO から 1 ワード取り込む
-                    if !WVALID_r {
-                        if wrt_valid {
-                            // すでに valid にデータが乗っている
-                            WDATA_r  = wrt_dout;
-                            WLAST_r  = 1'b1; // 1beat バーストなので必ず last
-                            WVALID_r = 1'b1;
-                        } else if !wrt_empty {
-                            // valid がまだなら rd_en を出して次サイクルを待つ
-                            wrt_rd_en = 1'b1;
-                        }
-                    }
-
-                    // WVALID_r == 1 の間は、WREADY が 0 の限り出力を保持
+                WState::write: {
+                    // WVALID_r == 1 の間は、WREADY が 0 なら何も変えない
                     if WVALID_r {
                         if WREADY {
-                            // ハンドシェイク成立：このビートを消費
+                            // ハンドシェイク成功
                             WVALID_r = 1'b0;
                             WLAST_r  = 1'b0;
 
-                            // 残りピクセルを 1 減らす
+                            // 1 ピクセル分書き終えた
                             if w_pixels_rem != 32'd0 {
                                 w_pixels_rem = w_pixels_rem - 32'd1;
                             }
+                            w_pixels_sent = w_pixels_sent + 32'd1;
 
-                            // このバーストは 1 beat 固定なので、すぐレスポンス待ちへ
-                            w_state = WState::resp;
+                            w_state = WState::wait_b;
                         } else {
-                            // WREADY=0 の間は何も変えない（WDATA_r / WLAST_r / WVALID_r を保持）
+                            // WREADY=0 の間は WDATA_r/WLAST_r/WVALID_r を保持
                         }
                     }
                 }
 
-                // ----------------------------------------
-                // resp: B レスポンス待ち
-                // ----------------------------------------
-                WState::resp: {
+                WState::wait_b: {
                     if BVALID && BREADY {
-                        if frame_active && (w_pixels_rem != 32'd0) && (wrt_count != 12'd0) {
-                            // まだ書くべきデータが残っている
-                            w_state = WState::addr;
+                        if frame_active && (w_pixels_rem != 32'd0) && FLTPC_WDATAVLD {
+                            // まだ書くべきピクセルが残っていて、次の入力もある
+                            w_state = WState::set_addr;
                         } else {
                             // 一旦 idle に戻って write_done 判定へ
                             w_state = WState::idle;
                         }
                     }
                 }
-            }
-
-            // フレームが終わったら WRITE FSM をクリア（保険）
-            if !frame_active {
-                AWVALID  = 1'b0;
-                WVALID_r = 1'b0;
-                WLAST_r  = 1'b0;
-                w_state  = WState::idle;
             }
         }
     }
