@@ -150,6 +150,8 @@ pub module flt_vramctrl (
             r_state = State::idle;
             ARVALID = 1'b0;
             RREADY  = 1'b0;
+            ARADDR  = 32'h0;
+            ARLEN   = 8'h0;
         } else {
             case r_state {
                 State::idle: {
@@ -220,6 +222,8 @@ pub module flt_vramctrl (
             AWVALID     = 1'b0;
             WVALID      = 1'b0;
             WLAST       = 1'b0;
+            AWADDR      = 32'h0;
+            AWLEN       = 8'h0;
             w_burst_cnt = 0;
         } else {
             case w_state {
