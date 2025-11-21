@@ -59,9 +59,11 @@ pub module flt_vramctrl (
     // unified synchronous-high reset
     let rst: '_ default reset_sync_high = ARST | RSTS;
 
-    const BLEN        : u32 = 16; // READ side beats per burst
-    const FIFO_DEPTH  : u32 = 2048;
-    const SRC_SAFE_GAP: u32 = 2;
+    const BLEN          : u32 = 16; // READ side beats per burst
+    const FIFO_DEPTH    : u32 = 2048;
+    const SRC_SAFE_GAP  : u32 = 2;
+    const W_PENDING_MAX : u32 = 8;   // max outstanding write responses
+    const WRT_HIGH_WATER: u32 = FIFO_DEPTH - BLEN; // throttle margin
 
     // ---------------- geometry ----------------
     var width : logic<16>;
@@ -181,10 +183,13 @@ pub module flt_vramctrl (
     );
 
     // filter への入力
+    let wrt_high_water_cnt: logic<12> = WRT_HIGH_WATER as 12;
+    let wrt_almost_full   : logic    = (wrt_count >: wrt_high_water_cnt) || (wrt_count == wrt_high_water_cnt);
+
     assign FLTVC_SDATA    = src_dout;
     assign FLTVC_SDATAVLD = src_valid; // dout valid = rd_en の 1 サイクル後想定
-    assign src_rd_en      = (!src_empty); // データがある限りストリームで供給
-    assign wrt_wr_en      = FLTPC_WDATAVLD; // フィルタ出力を FIFO へ
+    assign src_rd_en      = (!src_empty) && !wrt_almost_full; // 書き FIFO が詰みそうならフィルタ入力を止める
+    assign wrt_wr_en      = FLTPC_WDATAVLD && !wrt_full; // full への書き込みは禁止
 
     // ---------------- READ FSM (AR/R) ----------------
     enum RState {
@@ -320,25 +325,27 @@ pub module flt_vramctrl (
         idle,
         set_addr,
         write,
-        wait,
     }
     var w_state: WState    ;
     var w_addr : logic <32>;
+    var w_pending: logic<5>;
 
     // 出力レジスタ
     var WDATA_r : logic<32>;
     var WLAST_r : logic    ;
     var WVALID_r: logic    ;
 
+    let w_pending_limit: logic<5> = W_PENDING_MAX as 5;
+
     assign WDATA  = WDATA_r;
     assign WLAST  = WLAST_r;
     assign WVALID = WVALID_r;
     assign WSTRB  = 4'hF;
-    assign BREADY = (w_state == WState::wait);
+    assign BREADY = (w_pending != 5'd0);
 
     // write_done は「FSM idle & FIFO 空 & 出力レジスタも idle」で判定
     always_comb {
-        write_done = (w_state == WState::idle) && (wrt_count == 12'd0) && (WVALID_r == 1'b0) && (AWVALID == 1'b0);
+        write_done = (w_state == WState::idle) && (wrt_count == 12'd0) && (WVALID_r == 1'b0) && (AWVALID == 1'b0) && (w_pending == 5'd0);
     }
 
     always_ff {
@@ -347,7 +354,8 @@ pub module flt_vramctrl (
             AWADDR  = 32'd0;
             AWLEN   = 8'd0;
             AWVALID = 1'b0;
-            w_addr  = 32'd0;
+            w_addr    = 32'd0;
+            w_pending = 5'd0;
 
             WDATA_r  = 32'd0;
             WLAST_r  = 1'b0;
@@ -357,6 +365,10 @@ pub module flt_vramctrl (
         } else {
             // デフォルト
             wrt_rd_en = 1'b0;
+
+            if BVALID && BREADY {
+                w_pending = w_pending - 5'd1;
+            }
 
             case w_state {
                 WState::idle: {
@@ -382,7 +394,7 @@ pub module flt_vramctrl (
                         w_state = WState::idle;
                     } else {
                         // FIFO に 1 ワード以上あって、まだ AW を出していないなら発行
-                        if (wrt_count != 12'd0) && (AWVALID == 1'b0) {
+                        if (wrt_count != 12'd0) && (AWVALID == 1'b0) && (w_pending <: w_pending_limit) {
                             AWADDR  = w_addr;
                             AWLEN   = 8'd0; // 1 beat burst
                             AWVALID = 1'b1;
@@ -392,6 +404,7 @@ pub module flt_vramctrl (
                             AWVALID = 1'b0;
                             // 次のワードのアドレスを先に進めておく
                             w_addr = w_addr + 32'd4;
+                            w_pending = w_pending + 5'd1;
                             // このあと W を 1 beat 出す
                             w_state = WState::write;
                         }
@@ -419,23 +432,14 @@ pub module flt_vramctrl (
                             WVALID_r = 1'b0;
                             WLAST_r  = 1'b0;
 
-                            // このバーストは 1 beat 固定なので、すぐ B を待つ
-                            w_state = WState::wait;
+                            // 次のワードがあればすぐに次の AW を出す
+                            if frame_active && (wrt_count != 12'd0) {
+                                w_state = WState::set_addr;
+                            } else {
+                                w_state = WState::idle;
+                            }
                         } else {
                             // WREADY=0 の間は何も変えない（WDATA_r / WLAST_r / WVALID_r を保持）
-                        }
-                    }
-                }
-
-                WState::wait: {
-                    // B レスポンスを待つ
-                    if BVALID && BREADY {
-                        if frame_active && (wrt_count != 12'd0) {
-                            // まだ書くべきデータが残っている
-                            w_state = WState::set_addr;
-                        } else {
-                            // 一旦 idle に戻って write_done 判定へ
-                            w_state = WState::idle;
                         }
                     }
                 }
