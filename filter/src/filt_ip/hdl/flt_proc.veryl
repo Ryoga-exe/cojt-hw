@@ -19,27 +19,18 @@ pub module flt_proc (
 ) {
     let rst: '_ default reset = ARST | RSTS;
 
-    let r: logic<8> = FLTVC_SDATA[23:16];
-    let g: logic<8> = FLTVC_SDATA[15:8];
-    let b: logic<8> = FLTVC_SDATA[7:0];
+    let r: logic<8> = if FLTRG_COLOR[2] ? FLTVC_SDATA[23:16] : 8'h00;
+    let g: logic<8> = if FLTRG_COLOR[1] ? FLTVC_SDATA[15:8] : 8'h00;
+    let b: logic<8> = if FLTRG_COLOR[0] ? FLTVC_SDATA[7:0] : 8'h00;
+    let a: logic<8> = FLTVC_SDATA[31:24];
 
     always_ff {
         if_reset {
             FLTPC_WDATAVLD = 1'b0;
             FLTPC_WDATA    = 32'h0;
         } else {
-            if FLTVC_SDATAVLD {
-                FLTPC_WDATAVLD = 1'b1;
-
-                FLTPC_WDATA = {
-                    8'h00,
-                    if FLTRG_COLOR[2] ? r : 8'h00,
-                    if FLTRG_COLOR[1] ? g : 8'h00,
-                    if FLTRG_COLOR[0] ? b : 8'h00,
-                };
-            } else {
-                FLTPC_WDATAVLD = 1'b0;
-            }
+            FLTPC_WDATAVLD = FLTVC_SDATAVLD;
+            FLTPC_WDATA    = {a, r, g, b};
         }
     }
 }
