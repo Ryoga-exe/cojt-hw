@@ -59,11 +59,45 @@ pub module flt_vramctrl (
     const BURST_LEN: u32 = 32;
     const BURST_VAL: u32 = 8'd31;
 
-    var total_pixels  : logic<32>;
     var r_pix_cnt     : logic<32>; // read pixel counter
     var w_pix_cnt     : logic<32>; // write pixel counter
     var r_addr_current: logic<32>; // current read address
     var w_addr_current: logic<32>; // current write address
+
+    enum State {
+        idle,
+        addr,
+        data,
+        resp,
+    }
+    var r_state: State;
+    var w_state: State;
+
+    // decode RESOL
+    let total_pixels: logic<32> = case RESOL {
+        Resolution::Mode::vga : 640 * 480,
+        Resolution::Mode::xga : 1024 * 768,
+        Resolution::Mode::sxga: 1280 * 1024,
+        default               : 640 * 480,
+    };
+
+    // BUSY, INT
+    always_ff {
+        if_reset {
+            FLTVC_BUSY = 1'b0;
+            FLTVC_INT  = 1'b0;
+        } else {
+            if FLTRG_START {
+                FLTVC_BUSY = 1'b1;
+            } else if FLTVC_BUSY && (w_pix_cnt >= total_pixels) {
+                // writing is done
+                FLTVC_BUSY = 1'b0;
+                FLTVC_INT  = 1'b1;
+            } else {
+                FLTVC_INT = 1'b0;
+            }
+        }
+    }
 
     // Source data FIDO (R -> PROC)
     var src_dout : logic<32>;
