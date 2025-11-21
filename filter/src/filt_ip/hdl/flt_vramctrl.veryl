@@ -245,6 +245,38 @@ pub module flt_vramctrl (
         }
     }
 
+    // sub-logic
+    // TODO: move this sub-logic to FSM
+    var w_burst_cnt: logic<8>;
+
+    always_ff {
+        if_reset {
+            w_burst_cnt = 0;
+            WLAST       = 0;
+        } else if w_state == State::addr && AWREADY {
+            w_burst_cnt = 0;
+            WLAST       = 0;
+            if AWLEN == 0 {
+                WLAST = 1'b1;
+            }
+        } else if w_state == State::data && WREADY {
+            if w_burst_cnt == AWLEN {
+                // end of sending
+                WVALID  = 1'b0;
+                WLAST   = 1'b0;
+                w_state = State::resp;
+            } else {
+                w_burst_cnt += 1;
+                if w_burst_cnt == (AWLEN - 1) {
+                    WLAST = 1'b1;
+                }
+            }
+        }
+    }
+
+    // FIFO read enable
+    assign wrt_rd_en = (w_state == State::data) && WREADY;
+    assign WDATA     = wrt_dout;
 
     // Sourcedata FIDO (R -> PROC)
     var src_dout : logic<32>;
