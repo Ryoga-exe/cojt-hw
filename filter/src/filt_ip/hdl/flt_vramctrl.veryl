@@ -54,15 +54,34 @@ pub module flt_vramctrl (
     FLTVC_BUSY: output logic,
     FLTVC_INT : output logic,
 ) {
+    // Reset definition (Combined ARST and RSTS)
     let rst: '_ default reset_sync_high = ARST | RSTS;
 
     const BURST_LEN: u32 = 32;
     const BURST_VAL: u32 = 8'd31;
 
-    var r_pix_cnt     : logic<32>; // read pixel counter
-    var w_pix_cnt     : logic<32>; // write pixel counter
-    var r_addr_current: logic<32>; // current read address
-    var w_addr_current: logic<32>; // current write address
+    var r_pix_cnt     : logic<32>;
+    var w_pix_cnt     : logic<32>;
+    var r_addr_current: logic<32>;
+    var w_addr_current: logic<32>;
+    var w_burst_cnt   : logic<8> ; // Moved declaration up
+
+    // FIFO declarations (Moved up for scope visibility)
+    var src_dout : logic<32>;
+    var src_empty: logic    ;
+    var src_full : logic    ;
+    var src_valid: logic    ;
+    var src_rd_en: logic    ;
+    var src_wr_en: logic    ;
+    var src_count: logic<12>;
+
+    var wrt_dout : logic<32>;
+    var wrt_empty: logic    ;
+    var wrt_full : logic    ;
+    var wrt_valid: logic    ;
+    var wrt_rd_en: logic    ;
+    var wrt_wr_en: logic    ;
+    var wrt_count: logic<12>;
 
     enum State {
         idle,
@@ -90,7 +109,6 @@ pub module flt_vramctrl (
             if FLTRG_START {
                 FLTVC_BUSY = 1'b1;
             } else if FLTVC_BUSY && (w_pix_cnt >= total_pixels) {
-                // writing is done
                 FLTVC_BUSY = 1'b0;
                 FLTVC_INT  = 1'b1;
             } else {
@@ -109,7 +127,7 @@ pub module flt_vramctrl (
         if_reset {
             r_addr_current = 32'h0;
         } else if FLTRG_START {
-            r_addr_current = FLTRG_VRAMSRC; // initial value
+            r_addr_current = FLTRG_VRAMSRC;
         } else if ARVALID && ARREADY {
             r_addr_current += BURST_LEN * 4;
         }
@@ -137,12 +155,10 @@ pub module flt_vramctrl (
                 State::idle: {
                     ARVALID = 1'b0;
                     if FLTVC_BUSY && (r_pix_cnt <: total_pixels) && (src_count <: (2048 - BURST_LEN)) {
-                        // in burst, data is available and fifo has space
                         r_state = State::addr;
                         ARVALID = 1'b1;
-                        // 32 の倍数を仮定
-                        ARLEN  = BURST_VAL;
-                        ARADDR = r_addr_current;
+                        ARLEN   = BURST_VAL;
+                        ARADDR  = r_addr_current;
                     }
                 }
                 State::addr: {
@@ -158,11 +174,12 @@ pub module flt_vramctrl (
                         r_state = State::idle;
                     }
                 }
+                default: {}
             }
         }
     }
 
-    // filter proc
+    // filter proc connection
     assign src_rd_en      = !src_empty && !wrt_full;
     assign FLTVC_SDATAVLD = src_valid;
     assign FLTVC_SDATA    = src_dout;
@@ -173,9 +190,9 @@ pub module flt_vramctrl (
     assign wrt_wr_en = FLTPC_WDATAVLD;
 
     assign WSTRB  = 4'b1111;
-    assign BREADY = 1'b1; // always ok
+    assign BREADY = 1'b1;
 
-    // address
+    // address update
     always_ff {
         if_reset {
             w_addr_current = 32'h0;
@@ -197,13 +214,14 @@ pub module flt_vramctrl (
         }
     }
 
-    // write FSM
+    // Write FSM (Consolidated Logic)
     always_ff {
         if_reset {
-            w_state = State::idle;
-            AWVALID = 1'b0;
-            WVALID  = 1'b0;
-            WLAST   = 1'b0;
+            w_state     = State::idle;
+            AWVALID     = 1'b0;
+            WVALID      = 1'b0;
+            WLAST       = 1'b0;
+            w_burst_cnt = 0;
         } else {
             case w_state {
                 State::idle: {
@@ -214,26 +232,41 @@ pub module flt_vramctrl (
                         w_state = State::addr;
                         AWVALID = 1'b1;
                         AWADDR  = w_addr_current;
-                        // 端数処理
+
                         if remain_pix <: BURST_LEN {
                             AWLEN = remain_pix[7:0] - 1'b1;
                         } else {
                             AWLEN = BURST_VAL;
                         }
                     }
-
                 }
                 State::addr: {
                     if AWREADY {
                         AWVALID = 1'b0;
                         w_state = State::data;
                         WVALID  = 1'b1;
+
+                        // Initialize burst control logic here
+                        w_burst_cnt = 0;
+                        WLAST       = 0;
+                        if AWLEN == 0 {
+                            WLAST = 1'b1;
+                        }
                     }
                 }
                 State::data: {
-                    // TODO?
                     if WREADY {
-                        // TODO?
+                        if w_burst_cnt == AWLEN {
+                            // End of burst
+                            WVALID  = 1'b0;
+                            WLAST   = 1'b0;
+                            w_state = State::resp;
+                        } else {
+                            w_burst_cnt += 1;
+                            if w_burst_cnt == (AWLEN - 1) {
+                                WLAST = 1'b1; // Set WLAST 1 cycle before end
+                            }
+                        }
                     }
                 }
                 State::resp: {
@@ -241,35 +274,7 @@ pub module flt_vramctrl (
                         w_state = State::idle;
                     }
                 }
-            }
-        }
-    }
-
-    // sub-logic
-    // TODO: move this sub-logic to FSM
-    var w_burst_cnt: logic<8>;
-
-    always_ff {
-        if_reset {
-            w_burst_cnt = 0;
-            WLAST       = 0;
-        } else if w_state == State::addr && AWREADY {
-            w_burst_cnt = 0;
-            WLAST       = 0;
-            if AWLEN == 0 {
-                WLAST = 1'b1;
-            }
-        } else if w_state == State::data && WREADY {
-            if w_burst_cnt == AWLEN {
-                // end of sending
-                WVALID  = 1'b0;
-                WLAST   = 1'b0;
-                w_state = State::resp;
-            } else {
-                w_burst_cnt += 1;
-                if w_burst_cnt == (AWLEN - 1) {
-                    WLAST = 1'b1;
-                }
+                default: {}
             }
         }
     }
@@ -278,15 +283,7 @@ pub module flt_vramctrl (
     assign wrt_rd_en = (w_state == State::data) && WREADY;
     assign WDATA     = wrt_dout;
 
-    // Sourcedata FIDO (R -> PROC)
-    var src_dout : logic<32>;
-    var src_empty: logic    ;
-    var src_full : logic    ;
-    var src_valid: logic    ;
-    var src_rd_en: logic    ;
-    var src_wr_en: logic    ;
-    var src_count: logic<12>;
-
+    // Instantiations
     inst u_fifo_src: $sv::fifo_32in32out_2048depth (
         clk       : CLK      ,
         din       : RDATA    ,
@@ -301,15 +298,6 @@ pub module flt_vramctrl (
         underflow : _        ,
         data_count: src_count,
     );
-
-    // Write data FIFO (PROC -> W)
-    var wrt_dout : logic<32>;
-    var wrt_empty: logic    ;
-    var wrt_full : logic    ;
-    var wrt_valid: logic    ;
-    var wrt_rd_en: logic    ;
-    var wrt_wr_en: logic    ;
-    var wrt_count: logic<12>;
 
     inst u_fifo_wrt: $sv::fifo_32in32out_2048depth (
         clk       : CLK        ,
