@@ -99,6 +99,66 @@ pub module flt_vramctrl (
         }
     }
 
+    // Read Channel FSM
+    assign src_wr_en = RVALID && RREADY;
+
+    always_ff {
+        if_reset {
+            r_addr_current = 32'h0;
+        } else if FLTRG_START {
+            r_addr_current = FLTRG_VRAMSRC; // initial value
+        } else if ARVALID && ARREADY {
+            r_addr_current += BURST_LEN * 4;
+        }
+    }
+
+    // count pixels
+    always_ff {
+        if_reset {
+            r_pix_cnt = 32'h0;
+        } else if FLTRG_START {
+            r_pix_cnt = 32'h0;
+        } else if src_wr_en {
+            r_pix_cnt += 1;
+        }
+    }
+
+    // Read FSM
+    always_ff {
+        if_reset {
+            r_state = State::idle;
+            ARVALID = 1'b0;
+            RREADY  = 1'b0;
+        } else {
+            case r_state {
+                State::idle: {
+                    ARVALID = 1'b0;
+                    if FLTVC_BUSY && (r_pix_cnt <: total_pixels) && (src_count <: (2048 - BURST_LEN)) {
+                        // in burst, data is available and fifo has space
+                        r_state = State::addr;
+                        ARVALID = 1'b1;
+                        // 32 の倍数を仮定
+                        ARLEN  = BURST_VAL;
+                        ARADDR = r_addr_current;
+                    }
+                }
+                State::addr: {
+                    if ARREADY {
+                        ARVALID = 1'b0;
+                        r_state = State::data;
+                        RREADY  = 1'b1;
+                    }
+                }
+                State::data: {
+                    if RLAST && RVALID && RREADY {
+                        RREADY  = 1'b0;
+                        r_state = State::idle;
+                    }
+                }
+            }
+        }
+    }
+
     // Source data FIDO (R -> PROC)
     var src_dout : logic<32>;
     var src_empty: logic    ;
