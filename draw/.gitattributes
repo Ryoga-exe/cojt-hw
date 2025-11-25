@@ -1,0 +1,4 @@
+scripts/pynq_draw.tcl linguist-generated=true
+scripts/sim_draw.tcl  linguist-generated=true
+src/draw_ip/src       linguist-generated=true
+src/draw_ip/xgui      linguist-generated=true
