@@ -181,8 +181,16 @@ pub module flt_vramctrl (
     }
 
     // filter proc connection
+    var src_rd_en_d1: logic;
+    always_ff {
+        if_reset {
+            src_rd_en_d1 = 1'b0;
+        } else {
+            src_rd_en_d1 = src_rd_en;
+        }
+    }
     assign src_rd_en      = !src_empty && (wrt_count <: (2048 - 32));
-    assign FLTVC_SDATAVLD = src_valid;
+    assign FLTVC_SDATAVLD = src_rd_en_d1;
     assign FLTVC_SDATA    = src_dout;
 
     //-------------------------------------------------------------------------
@@ -282,8 +290,9 @@ pub module flt_vramctrl (
     }
 
     // FIFO read enable
-    assign wrt_rd_en = (w_state == State::data) && WREADY;
-    assign WDATA     = wrt_dout;
+    let w_last_beat: logic = (w_burst_cnt == AWLEN);
+    assign wrt_rd_en   = (w_state == State::addr && AWREADY) || (w_state == State::data && WREADY && !w_last_beat);
+    assign WDATA       = wrt_dout;
 
     // Instantiations
     inst u_fifo_src: $sv::fifo_32in32out_2048depth (
