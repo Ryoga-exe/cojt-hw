@@ -14,6 +14,7 @@ add_files -fileset sources_1 [glob target/draw_ip/hdl/*.sv]
 add_files -fileset sources_1 target/draw_ip/hdl/filter.v
 update_compile_order -fileset sources_1
 
+# TODO: setting up FIFO
 # --- Add FIFO ------------------------------------------
 # import_ip target/draw_ip/src/fifo_32in32out_2048depth/fifo_32in32out_2048depth.xci
 # update_ip_catalog
