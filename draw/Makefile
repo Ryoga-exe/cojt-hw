@@ -20,11 +20,8 @@ endif
 build:
 	$(VERYL) build
 	$(MKDIR) -p target/$(IP)/src
-	$(MKDIR) -p target/$(IP)/xgui
 	$(MKDIR) -p target/$(IP)/hdl
-	# $(CP)    src/$(IP)/component.xml target/$(IP)/
-	# $(CPDIR) src/$(IP)/src/. target/$(IP)/src/
-	# $(CPDIR) src/$(IP)/xgui/. target/$(IP)/xgui/
+	$(CPDIR) src/$(IP)/src/. target/$(IP)/src/
 	$(CP)    src/$(IP)/hdl/*.v target/$(IP)/hdl/
 
 .PHONY: project
