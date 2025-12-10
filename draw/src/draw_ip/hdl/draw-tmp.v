@@ -1,20 +1,17 @@
+//-----------------------------------------------------------------------------
+// Title       : 描画回路の最上位階層
+// File        : draw.v
+//-----------------------------------------------------------------------------
+
 module draw #(
     parameter integer C_M_AXI_THREAD_ID_WIDTH = 1,
     parameter integer C_M_AXI_ADDR_WIDTH      = 32,
     parameter integer C_M_AXI_DATA_WIDTH      = 32,
     parameter integer C_M_AXI_AWUSER_WIDTH    = 1,
     parameter integer C_M_AXI_ARUSER_WIDTH    = 1,
-    parameter integer C_M_AXI_WUSER_WIDTH     = 4,   // Warning対策
-    parameter integer C_M_AXI_RUSER_WIDTH     = 4,   // Warning対策
-    parameter integer C_M_AXI_BUSER_WIDTH     = 1,
-
-    /* 以下は未対応だけどコンパイルエラー回避のため付加しておく */
-    parameter integer C_INTERCONNECT_M_AXI_WRITE_ISSUING = 0,
-    parameter integer C_M_AXI_SUPPORTS_READ              = 1,
-    parameter integer C_M_AXI_SUPPORTS_WRITE             = 1,
-    parameter integer C_M_AXI_TARGET                     = 0,
-    parameter integer C_M_AXI_BURST_LEN                  = 0,
-    parameter integer C_OFFSET_WIDTH                     = 0
+    parameter integer C_M_AXI_WUSER_WIDTH     = 4,
+    parameter integer C_M_AXI_RUSER_WIDTH     = 4,
+    parameter integer C_M_AXI_BUSER_WIDTH     = 1
 ) (
     // System Signals
     input wire ACLK,
@@ -29,14 +26,12 @@ module draw #(
     output wire [                      2-1:0] M_AXI_AWLOCK,
     output wire [                      4-1:0] M_AXI_AWCACHE,
     output wire [                      3-1:0] M_AXI_AWPROT,
-    // AXI3 output wire [4-1:0]                  M_AXI_AWREGION,
     output wire [                      4-1:0] M_AXI_AWQOS,
     output wire [   C_M_AXI_AWUSER_WIDTH-1:0] M_AXI_AWUSER,
     output wire                               M_AXI_AWVALID,
     input  wire                               M_AXI_AWREADY,
 
     // Master Interface Write Data
-    // AXI3 output wire [C_M_AXI_THREAD_ID_WIDTH-1:0]     M_AXI_WID,
     output wire [  C_M_AXI_DATA_WIDTH-1:0] M_AXI_WDATA,
     output wire [C_M_AXI_DATA_WIDTH/8-1:0] M_AXI_WSTRB,
     output wire                            M_AXI_WLAST,
@@ -60,7 +55,6 @@ module draw #(
     output wire [                      2-1:0] M_AXI_ARLOCK,
     output wire [                      4-1:0] M_AXI_ARCACHE,
     output wire [                      3-1:0] M_AXI_ARPROT,
-    // AXI3 output wire [4-1:0]                  M_AXI_ARREGION,
     output wire [                      4-1:0] M_AXI_ARQOS,
     output wire [   C_M_AXI_ARUSER_WIDTH-1:0] M_AXI_ARUSER,
     output wire                               M_AXI_ARVALID,
@@ -90,46 +84,11 @@ module draw #(
     output [31:0] RDATA
 );
 
-  // Write Address (AW)
-  assign M_AXI_AWID    = 'b0;
-  assign M_AXI_AWSIZE  = 3'b010; // 4 Byte (32bit)
-  assign M_AXI_AWBURST = 2'b01;  // INCR
-  assign M_AXI_AWLOCK  = 1'b0;
-  assign M_AXI_AWCACHE = 4'b0011;
-  assign M_AXI_AWPROT  = 3'h0;
-  assign M_AXI_AWQOS   = 4'h0;
-  assign M_AXI_AWUSER  = 'b0;
-
-  // Write Data(W)
-  assign M_AXI_WUSER   = 'b0;
-
-  // Read Address
-  assign M_AXI_ARID    = 'b0;
-  assign M_AXI_ARSIZE  = 3'b010; // 4 Byte (32bit)
-  assign M_AXI_ARBURST = 2'b01;  // INCR
-  assign M_AXI_ARLOCK  = 1'b0;
-  assign M_AXI_ARCACHE = 4'b0011;
-  assign M_AXI_ARPROT  = 3'h0;
-  assign M_AXI_ARQOS   = 4'h0;
-  assign M_AXI_ARUSER  = 'b0;
-
-  // ACLK で同期化したリセット信号 ARST
-  reg [1:0] arst_ff;
-  always @(posedge ACLK) begin
-    arst_ff <= {arst_ff[0], ~ARESETN};
-  end
-  wire ARST = arst_ff[1];
-
-  // RESOL を FF に取り込んでから利用
-  reg [1:0] RESOL_ff;
-  always @(posedge ACLK) begin
-    RESOL_ff <= RESOL;
-  end
-
-
   //---------------------------------------------------------------------------
-  // signals
+  // 内部信号定義
   //---------------------------------------------------------------------------
+  // リセット
+  wire        arst = ~ARESETN;
   wire        soft_rst;  // ソフトリセット (DRAWCTRL.RST)
 
   // レジスタ制御 -> メイン制御
@@ -156,8 +115,7 @@ module draw #(
   // メイン制御 -> ピクセル処理 (パラメータ)
   wire [31:0] param_fcolor;  // 描画色
   wire        param_blend;  // ブレンド有効
-  wire        cmd_mode;
-  // ...
+  // ※その他、ステンシル設定などのパラメータが必要ですが、一旦省略
 
   // 画像データFIFO関連
   // SRC (Texture)
@@ -179,15 +137,39 @@ module draw #(
   wire [11:0] wrt_fifo_count;
 
 
+  //---------------------------------------------------------------------------
+  // AXI固定値割り当て (Write Address / Data / Response)
+  //---------------------------------------------------------------------------
+  // 描画回路は32bitデータ幅、バースト転送を行う
+  assign M_AXI_AWID    = 'b0;
+  assign M_AXI_AWSIZE  = 3'b010; // 4 Byte (32bit)
+  assign M_AXI_AWBURST = 2'b01;  // INCR
+  assign M_AXI_AWLOCK  = 1'b0;
+  assign M_AXI_AWCACHE = 4'b0011;
+  assign M_AXI_AWPROT  = 3'h0;
+  assign M_AXI_AWQOS   = 4'h0;
+  assign M_AXI_AWUSER  = 'b0;
+  assign M_AXI_WUSER   = 'b0;
+
+  // Read Address
+  assign M_AXI_ARID    = 'b0;
+  assign M_AXI_ARSIZE  = 3'b010; // 4 Byte (32bit)
+  assign M_AXI_ARBURST = 2'b01;  // INCR
+  assign M_AXI_ARLOCK  = 1'b0;
+  assign M_AXI_ARCACHE = 4'b0011;
+  assign M_AXI_ARPROT  = 3'h0;
+  assign M_AXI_ARQOS   = 4'h0;
+  assign M_AXI_ARUSER  = 'b0;
+
 
   //---------------------------------------------------------------------------
-  // submodules
+  // サブモジュール接続
   //---------------------------------------------------------------------------
 
-  // 1. register control
+  // 1. レジスタ制御
   drw_regctrl u_drw_regctrl (
       .CLK (ACLK),
-      .ARST(ARST),
+      .ARST(arst),
 
       // RegBus
       .WRADDR(WRADDR),
@@ -212,11 +194,12 @@ module draw #(
       .CMD_FIFO_COUNT(cmd_fifo_count)
   );
 
-  // 2. command buffer (FIFO)
+  // 2. コマンドバッファ (FIFO)
+  // Xilinx FIFO IP (Common Clock Built-in FIFO想定)
   // 32bit x 2048depth
   fifo_32in32out_2048depth u_cmd_fifo (
       .clk       (ACLK),
-      .rst       (ARST | soft_rst),
+      .rst       (arst | soft_rst),
       .din       (cmd_fifo_wdata),
       .wr_en     (cmd_fifo_wr),
       .rd_en     (cmd_fifo_rd),
@@ -226,10 +209,10 @@ module draw #(
       .data_count({1'b0, cmd_fifo_count})  // data_countが12bitの場合
   );
 
-  // 3. main control (analyze command & generate address)
+  // 3. メイン制御 (コマンド解析 & アドレス生成)
   drw_mainctrl u_drw_mainctrl (
       .CLK      (ACLK),
-      .ARST     (ARST),
+      .ARST     (arst),
       .SOFT_RST (soft_rst),
       .DRW_START(drw_start),  // 開始トリガ
       .DRW_BUSY (drw_busy),   // Busy出力
@@ -246,17 +229,16 @@ module draw #(
       .LINE_ADDR_DST(line_addr_dst),
       .LINE_ADDR_SRC(line_addr_src),
       .LINE_LEN     (line_len),
-      .CMD_MODE     (cmd_mode),
 
       // Parameters to Pixel Proc
       .PARAM_FCOLOR(param_fcolor),
       .PARAM_BLEND (param_blend)
   );
 
-  // 4. VRAM control (AXI Master & FIFO Control)
+  // 4. VRAM制御 (AXI Master & FIFO Control)
   drw_vramctrl u_drw_vramctrl (
       .CLK (ACLK),
-      .ARST(ARST | soft_rst),
+      .ARST(arst | soft_rst),
 
       // AXI4 Read/Write Signals
       .M_AXI_ARADDR (M_AXI_ARADDR),
@@ -287,7 +269,6 @@ module draw #(
       .LINE_ADDR_SRC(line_addr_src),
       .LINE_LEN     (line_len),
       .PARAM_BLEND  (param_blend),    // ブレンド有効時はDST読み出しが必要
-      .CMD_MODE     (cmd_mode),
 
       // Data FIFO Interfaces
       // SRC (Write to FIFO)
@@ -305,11 +286,11 @@ module draw #(
       .WRT_FIFO_COUNT(wrt_fifo_count)
   );
 
-  // 5. Data Fifo (x3)
+  // 5. データFIFO (3つ)
   // SRC FIFO (Texture Data)
   fifo_32in32out_2048depth u_src_fifo (
       .clk(ACLK),
-      .rst(ARST | soft_rst),
+      .rst(arst | soft_rst),
       .din(src_fifo_wdata),
       .wr_en(src_fifo_wr),
       .full(src_fifo_full),
@@ -321,7 +302,7 @@ module draw #(
   // DST FIFO (Background Data)
   fifo_32in32out_2048depth u_dst_fifo (
       .clk(ACLK),
-      .rst(ARST | soft_rst),
+      .rst(arst | soft_rst),
       .din(dst_fifo_wdata),
       .wr_en(dst_fifo_wr),
       .full(dst_fifo_full),
@@ -333,7 +314,7 @@ module draw #(
   // WRT FIFO (Result Data)
   fifo_32in32out_2048depth u_wrt_fifo (
       .clk(ACLK),
-      .rst(ARST | soft_rst),
+      .rst(arst | soft_rst),
       .din(wrt_fifo_wdata),
       .wr_en(wrt_fifo_wr),
       .full(wrt_fifo_full),
@@ -343,15 +324,14 @@ module draw #(
       .empty(wrt_fifo_empty)
   );
 
-  // 6. pixel proc
+  // 6. ピクセル処理
   drw_pixelproc u_drw_pixelproc (
       .CLK (ACLK),
-      .ARST(ARST | soft_rst),
+      .ARST(arst | soft_rst),
 
       // Parameters
       .PARAM_FCOLOR(param_fcolor),
-      .PARAM_BLEND(param_blend),
-      .CMD_MODE(cmd_mode),
+      .PARAM_BLEND (param_blend),
 
       // FIFO Interface
       .SRC_FIFO_EMPTY(src_fifo_empty),
