@@ -42,6 +42,7 @@ update_compile_order -fileset sources_1
 
 # --- Add Simulation Sources -----------------------------------
 add_files -fileset sim_1 [glob src/sim/tb/*.sv]
+add_files -fileset sim_1 [glob src/sim/*raw]
 
 update_compile_order -fileset sim_1
 
