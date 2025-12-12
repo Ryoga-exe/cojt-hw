@@ -104,19 +104,25 @@ module draw_regctrl (
   end
 
   //-------------------------------------------------------------------------
-  // FIFO IP インスタンス化
-  // IP名: fifo_32in32out_2048depth
+  // コマンドFIFO インスタンス化
   //-------------------------------------------------------------------------
+  // 32bit input / 32bit output / 2048 depth
+  // 独立クロック用IPポート仕様に合わせて接続 (wr_clk = rd_clk = CLK)
+
   fifo_32in32out_2048depth u_cmd_fifo (
-      .clk       (CLK),
-      .srst      (internal_rst),  // Synchronous Reset
-      .din       (WDATA),         // [31:0] Input Data
-      .wr_en     (cmd_fifo_we),   // Write Enable
-      .rd_en     (CMD_RD_EN),     // Read Enable
-      .dout      (CMD_RDATA),     // [31:0] Output Data
-      .full      (CMD_FULL),
-      .empty     (CMD_EMPTY),
-      .data_count(cmd_count)      // [10:0] Data Count
+      .rst          (internal_rst),  // Reset
+      .wr_clk       (CLK),           // Write Clock
+      .rd_clk       (CLK),           // Read Clock
+      .din          (WDATA),         // [31:0] Write Data
+      .wr_en        (cmd_fifo_we),   // Write Enable
+      .rd_en        (CMD_RD_EN),     // Read Enable
+      .dout         (CMD_RDATA),     // [31:0] Read Data
+      .full         (CMD_FULL),      // Full Flag
+      .overflow     (),              // Overflow (Unused)
+      .empty        (CMD_EMPTY),     // Empty Flag
+      .valid        (),              // Valid (Unused)
+      .underflow    (),              // Underflow (Unused)
+      .wr_data_count(cmd_count)      // [10:0] Write Data Count
   );
 
 endmodule
