@@ -1,6 +1,5 @@
 //-----------------------------------------------------------------------------
-// Title       : 描画回路の最上位階層
-// Project     : draw
+// Title       : 描画回路 最上位階層
 // Filename    : draw.v
 //-----------------------------------------------------------------------------
 
@@ -10,11 +9,11 @@ module draw #(
     parameter integer C_M_AXI_DATA_WIDTH      = 32,
     parameter integer C_M_AXI_AWUSER_WIDTH    = 1,
     parameter integer C_M_AXI_ARUSER_WIDTH    = 1,
-    parameter integer C_M_AXI_WUSER_WIDTH     = 4,   // Warning対策
-    parameter integer C_M_AXI_RUSER_WIDTH     = 4,   // Warning対策
+    parameter integer C_M_AXI_WUSER_WIDTH     = 4,
+    parameter integer C_M_AXI_RUSER_WIDTH     = 4,
     parameter integer C_M_AXI_BUSER_WIDTH     = 1,
 
-    /* 以下は未対応だけどコンパイルエラー回避のため付加しておく */
+    /* Dummy parameters for compatibility */
     parameter integer C_INTERCONNECT_M_AXI_WRITE_ISSUING = 0,
     parameter integer C_M_AXI_SUPPORTS_READ              = 1,
     parameter integer C_M_AXI_SUPPORTS_WRITE             = 1,
@@ -35,14 +34,12 @@ module draw #(
     output wire [                      2-1:0] M_AXI_AWLOCK,
     output wire [                      4-1:0] M_AXI_AWCACHE,
     output wire [                      3-1:0] M_AXI_AWPROT,
-    // AXI3 output wire [4-1:0]                  M_AXI_AWREGION,
     output wire [                      4-1:0] M_AXI_AWQOS,
     output wire [   C_M_AXI_AWUSER_WIDTH-1:0] M_AXI_AWUSER,
     output wire                               M_AXI_AWVALID,
     input  wire                               M_AXI_AWREADY,
 
     // Master Interface Write Data
-    // AXI3 output wire [C_M_AXI_THREAD_ID_WIDTH-1:0]     M_AXI_WID,
     output wire [  C_M_AXI_DATA_WIDTH-1:0] M_AXI_WDATA,
     output wire [C_M_AXI_DATA_WIDTH/8-1:0] M_AXI_WSTRB,
     output wire                            M_AXI_WLAST,
@@ -66,7 +63,6 @@ module draw #(
     output wire [                      2-1:0] M_AXI_ARLOCK,
     output wire [                      4-1:0] M_AXI_ARCACHE,
     output wire [                      3-1:0] M_AXI_ARPROT,
-    // AXI3 output wire [4-1:0]                  M_AXI_ARREGION,
     output wire [                      4-1:0] M_AXI_ARQOS,
     output wire [   C_M_AXI_ARUSER_WIDTH-1:0] M_AXI_ARUSER,
     output wire                               M_AXI_ARVALID,
@@ -97,46 +93,36 @@ module draw #(
 );
 
   //-------------------------------------------------------------------------
-  // AXI4 Master Interface Fixed Signals (Write Address Channel)
+  // AXI4 Master Fixed Signals
   //-------------------------------------------------------------------------
   assign M_AXI_AWID    = {C_M_AXI_THREAD_ID_WIDTH{1'b0}};
-  assign M_AXI_AWSIZE  = 3'b010;  // 4 Bytes (32bit) [cite: 16]
-  assign M_AXI_AWBURST = 2'b01;   // INCR type [cite: 17]
-  assign M_AXI_AWLOCK  = 2'b00;   // Normal access
-  assign M_AXI_AWCACHE = 4'b0011; // Bufferable and Modifiable [cite: 17]
+  assign M_AXI_AWSIZE  = 3'b010;  // 4 Bytes
+  assign M_AXI_AWBURST = 2'b01;   // INCR
+  assign M_AXI_AWLOCK  = 2'b00;
+  assign M_AXI_AWCACHE = 4'b0011;
   assign M_AXI_AWPROT  = 3'h0;
   assign M_AXI_AWQOS   = 4'h0;
   assign M_AXI_AWUSER  = {C_M_AXI_AWUSER_WIDTH{1'b0}};
-
-  //-------------------------------------------------------------------------
-  // AXI4 Master Interface Fixed Signals (Write Data Channel)
-  //-------------------------------------------------------------------------
   assign M_AXI_WUSER   = {C_M_AXI_WUSER_WIDTH{1'b0}};
 
-  //-------------------------------------------------------------------------
-  // AXI4 Master Interface Fixed Signals (Read Address Channel)
-  //-------------------------------------------------------------------------
   assign M_AXI_ARID    = {C_M_AXI_THREAD_ID_WIDTH{1'b0}};
-  assign M_AXI_ARSIZE  = 3'b010;  // 4 Bytes (32bit) [cite: 20]
-  assign M_AXI_ARBURST = 2'b01;   // INCR type [cite: 20]
+  assign M_AXI_ARSIZE  = 3'b010;
+  assign M_AXI_ARBURST = 2'b01;
   assign M_AXI_ARLOCK  = 2'b00;
-  assign M_AXI_ARCACHE = 4'b0011; // Bufferable and Modifiable [cite: 21]
+  assign M_AXI_ARCACHE = 4'b0011;
   assign M_AXI_ARPROT  = 3'h0;
   assign M_AXI_ARQOS   = 4'h0;
   assign M_AXI_ARUSER  = {C_M_AXI_ARUSER_WIDTH{1'b0}};
 
   //-------------------------------------------------------------------------
-  // Reset Synchronization (ACLK Domain)
+  // Reset & Sync
   //-------------------------------------------------------------------------
   reg [1:0] arst_ff;
   always @(posedge ACLK) begin
     arst_ff <= {arst_ff[0], ~ARESETN};
   end
-  wire ARST = arst_ff[1];  // Active High Reset [cite: 22, 23]
+  wire ARST = arst_ff[1];
 
-  //-------------------------------------------------------------------------
-  // Resolution Synchronization
-  //-------------------------------------------------------------------------
   reg [1:0] RESOL_ff;
   always @(posedge ACLK) begin
     RESOL_ff <= RESOL;
@@ -145,84 +131,69 @@ module draw #(
   //-------------------------------------------------------------------------
   // Internal Signals
   //-------------------------------------------------------------------------
-  // Register Control <-> VRAM Control Interface
-  wire        draw_busy;  // 描画実行中フラグ (DRAWSTAT.BUSY)
-  wire        cmd_fifo_empty;  // コマンドFIFO空フラグ
-  wire        cmd_fifo_full;  // コマンドFIFO満杯フラグ (Option)
-  wire        cmd_fifo_rd_en;  // コマンドFIFO読み出し要求
-  wire [31:0] cmd_fifo_rdata;  // コマンドFIFO読み出しデータ
+  wire        draw_busy;
+  wire        cmd_fifo_empty;
+  wire        cmd_fifo_full;
+  wire        cmd_fifo_rd_en;
+  wire [31:0] cmd_fifo_rdata;
+  wire        reg_exe;  // 実行開始信号
+  wire        reg_rst;  // ソフトウェアリセット
 
   //-------------------------------------------------------------------------
   // Submodule Instances
   //-------------------------------------------------------------------------
-
-  // 描画レジスタ制御 & コマンドFIFO管理
+  // レジスタ制御 & コマンドFIFO
   draw_regctrl u_draw_regctrl (
-      .CLK (ACLK),
-      .ARST(ARST),
-
-      // レジスタバス I/F
-      .WRADDR(WRADDR),
-      .BYTEEN(BYTEEN),
-      .WREN  (WREN),
-      .WDATA (WDATA),
-      .RDADDR(RDADDR),
-      .RDEN  (RDEN),
-      .RDATA (RDATA),
-
-      // ステータス・割り込み
+      .CLK      (ACLK),
+      .ARST     (ARST),
+      .WRADDR   (WRADDR),
+      .BYTEEN   (BYTEEN),
+      .WREN     (WREN),
+      .WDATA    (WDATA),
+      .RDADDR   (RDADDR),
+      .RDEN     (RDEN),
+      .RDATA    (RDATA),
       .DRAW_BUSY(draw_busy),
       .DRW_IRQ  (DRW_IRQ),
-
-      // コマンドFIFO I/F (Write側は内部、Read側を出力)
+      .REG_EXE  (reg_exe),
+      .REG_RST  (reg_rst),
       .CMD_RD_EN(cmd_fifo_rd_en),
       .CMD_RDATA(cmd_fifo_rdata),
       .CMD_EMPTY(cmd_fifo_empty),
       .CMD_FULL (cmd_fifo_full)
   );
 
-  // 描画VRAM制御 & コマンド解析・実行エンジン
+  // VRAM制御 & 描画エンジン
   draw_vramctrl u_draw_vramctrl (
-      .CLK  (ACLK),
-      .ARST (ARST),
-      .RESOL(RESOL_ff),
-
-      // コマンドFIFO I/F (Read側)
+      .CLK      (ACLK),
+      .ARST     (ARST),
+      .RESOL    (RESOL_ff),
+      .REG_EXE  (reg_exe),         // 追加: 実行開始信号
       .CMD_RD_EN(cmd_fifo_rd_en),
       .CMD_RDATA(cmd_fifo_rdata),
       .CMD_EMPTY(cmd_fifo_empty),
-
-      // ステータス出力
       .DRAW_BUSY(draw_busy),
 
-      // AXI4 Master Write Address
       .M_AXI_AWADDR (M_AXI_AWADDR),
       .M_AXI_AWLEN  (M_AXI_AWLEN),
       .M_AXI_AWVALID(M_AXI_AWVALID),
       .M_AXI_AWREADY(M_AXI_AWREADY),
+      .M_AXI_WDATA  (M_AXI_WDATA),
+      .M_AXI_WSTRB  (M_AXI_WSTRB),
+      .M_AXI_WLAST  (M_AXI_WLAST),
+      .M_AXI_WVALID (M_AXI_WVALID),
+      .M_AXI_WREADY (M_AXI_WREADY),
+      .M_AXI_BVALID (M_AXI_BVALID),
+      .M_AXI_BREADY (M_AXI_BREADY),
 
-      // AXI4 Master Write Data
-      .M_AXI_WDATA (M_AXI_WDATA),
-      .M_AXI_WSTRB (M_AXI_WSTRB),
-      .M_AXI_WLAST (M_AXI_WLAST),
-      .M_AXI_WVALID(M_AXI_WVALID),
-      .M_AXI_WREADY(M_AXI_WREADY),
-
-      // AXI4 Master Write Response
-      .M_AXI_BVALID(M_AXI_BVALID),
-      .M_AXI_BREADY(M_AXI_BREADY),
-
-      // AXI4 Master Read Address (STEP-2以降で使用)
       .M_AXI_ARADDR (M_AXI_ARADDR),
       .M_AXI_ARLEN  (M_AXI_ARLEN),
       .M_AXI_ARVALID(M_AXI_ARVALID),
       .M_AXI_ARREADY(M_AXI_ARREADY),
-
-      // AXI4 Master Read Data (STEP-2以降で使用)
-      .M_AXI_RDATA (M_AXI_RDATA),
-      .M_AXI_RLAST (M_AXI_RLAST),
-      .M_AXI_RVALID(M_AXI_RVALID),
-      .M_AXI_RREADY(M_AXI_RREADY)
+      .M_AXI_RDATA  (M_AXI_RDATA),
+      .M_AXI_RLAST  (M_AXI_RLAST),
+      .M_AXI_RVALID (M_AXI_RVALID),
+      .M_AXI_RREADY (M_AXI_RREADY)
   );
 
 endmodule

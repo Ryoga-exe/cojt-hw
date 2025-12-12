@@ -1,6 +1,6 @@
 //-----------------------------------------------------------------------------
-// Title       : 描画レジスタ制御 (SystemVerilog版)
-// Module      : draw_regctrl
+// Title       : 描画レジスタ制御
+// Filename    : draw_regctrl.sv
 //-----------------------------------------------------------------------------
 
 module draw_regctrl (
@@ -17,21 +17,19 @@ module draw_regctrl (
     output logic [31:0] RDATA,
 
     // ステータス・制御信号
-    input  wire  DRAW_BUSY,  // 描画実行中
-    output logic DRW_IRQ,    // 割り込み出力
-    output logic REG_EXE,    // 実行開始信号 (DRAWCTRL[0])
-    output logic REG_RST,    // ソフトリセット (DRAWCTRL[1])
+    input  wire  DRAW_BUSY,
+    output logic DRW_IRQ,
+    output logic REG_EXE,
+    output logic REG_RST,
 
     // コマンドFIFO I/F
-    input  wire         CMD_RD_EN,  // FIFO読み出し
-    output logic [31:0] CMD_RDATA,  // FIFOデータ
-    output logic        CMD_EMPTY,  // FIFO空
-    output logic        CMD_FULL    // FIFO満杯
+    input  wire        CMD_RD_EN,
+    output wire [31:0] CMD_RDATA,
+    output wire        CMD_EMPTY,
+    output wire        CMD_FULL
 );
 
-  //-------------------------------------------------------------------------
   // レジスタ定義
-  //-------------------------------------------------------------------------
   logic [31:0] reg_drawctrl;  // 0x2000
   logic [31:0] reg_drawint;  // 0x2010
 
@@ -41,7 +39,7 @@ module draw_regctrl (
   assign waddr_mask = WRADDR & 16'hFFFF;
   assign raddr_mask = RDADDR & 16'hFFFF;
 
-  // ソフトリセット・実行信号
+  // 制御信号出力
   assign REG_RST = reg_drawctrl[1];
   assign REG_EXE = reg_drawctrl[0];
 
@@ -49,15 +47,15 @@ module draw_regctrl (
   logic internal_rst;
   assign internal_rst = ARST | REG_RST;
 
-  // FIFO書き込み信号
+  // FIFO書き込み制御
   logic cmd_fifo_we;
   assign cmd_fifo_we = WREN && (waddr_mask == 16'h200C);
 
-  // FIFOステータス用
+  // FIFOデータカウント
   logic [10:0] cmd_count;
 
   //-------------------------------------------------------------------------
-  // レジスタ書き込み (always_ff)
+  // レジスタ書き込み
   //-------------------------------------------------------------------------
   always_ff @(posedge CLK or posedge ARST) begin
     if (ARST) begin
@@ -70,7 +68,6 @@ module draw_regctrl (
         DRW_IRQ <= 1'b0;
       end
 
-      // レジスタ書き込み処理
       if (WREN) begin
         case (waddr_mask)
           16'h2000: begin  // DRAWCTRL
@@ -83,7 +80,7 @@ module draw_regctrl (
         endcase
       end
 
-      // ソフトリセットの自動クリア (1サイクルパルス的動作)
+      // ソフトリセットの自動クリア (パルス動作)
       if (reg_drawctrl[1]) begin
         reg_drawctrl[1] <= 1'b0;
       end
@@ -107,36 +104,19 @@ module draw_regctrl (
   end
 
   //-------------------------------------------------------------------------
-  // コマンドFIFO (簡易実装)
+  // FIFO IP インスタンス化
+  // IP名: fifo_32in32out_2048depth
   //-------------------------------------------------------------------------
-  logic [31:0] mem[0:2047];
-  logic [10:0] wptr, rptr;
-  logic [11:0] count;
-
-  assign CMD_EMPTY = (count == 0);
-  assign CMD_FULL  = (count == 2048);
-  assign cmd_count = count[10:0];
-  assign CMD_RDATA = mem[rptr];
-
-  always_ff @(posedge CLK or posedge internal_rst) begin
-    if (internal_rst) begin
-      wptr  <= 0;
-      rptr  <= 0;
-      count <= 0;
-    end else begin
-      // Write
-      if (cmd_fifo_we && !CMD_FULL) begin
-        mem[wptr] <= WDATA;
-        wptr <= wptr + 1;
-      end
-      // Read
-      if (CMD_RD_EN && !CMD_EMPTY) begin
-        rptr <= rptr + 1;
-      end
-      // Count update
-      if (cmd_fifo_we && !CMD_FULL && !(CMD_RD_EN && !CMD_EMPTY)) count <= count + 1;
-      else if (!(cmd_fifo_we && !CMD_FULL) && (CMD_RD_EN && !CMD_EMPTY)) count <= count - 1;
-    end
-  end
+  fifo_32in32out_2048depth u_cmd_fifo (
+      .clk       (CLK),
+      .srst      (internal_rst),  // Synchronous Reset
+      .din       (WDATA),         // [31:0] Input Data
+      .wr_en     (cmd_fifo_we),   // Write Enable
+      .rd_en     (CMD_RD_EN),     // Read Enable
+      .dout      (CMD_RDATA),     // [31:0] Output Data
+      .full      (CMD_FULL),
+      .empty     (CMD_EMPTY),
+      .data_count(cmd_count)      // [10:0] Data Count
+  );
 
 endmodule
