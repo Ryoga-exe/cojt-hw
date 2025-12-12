@@ -1,3 +1,9 @@
+//-----------------------------------------------------------------------------
+// Title       : 描画回路の最上位階層
+// Project     : draw
+// Filename    : draw.v
+//-----------------------------------------------------------------------------
+
 module draw #(
     parameter integer C_M_AXI_THREAD_ID_WIDTH = 1,
     parameter integer C_M_AXI_ADDR_WIDTH      = 32,
@@ -90,106 +96,72 @@ module draw #(
     output [31:0] RDATA
 );
 
-  // Write Address (AW)
-  assign M_AXI_AWID    = 'b0;
-  assign M_AXI_AWSIZE  = 3'b010; // 4 Byte (32bit)
-  assign M_AXI_AWBURST = 2'b01;  // INCR
-  assign M_AXI_AWLOCK  = 1'b0;
-  assign M_AXI_AWCACHE = 4'b0011;
+  //-------------------------------------------------------------------------
+  // AXI4 Master Interface Fixed Signals (Write Address Channel)
+  //-------------------------------------------------------------------------
+  assign M_AXI_AWID    = {C_M_AXI_THREAD_ID_WIDTH{1'b0}};
+  assign M_AXI_AWSIZE  = 3'b010;  // 4 Bytes (32bit) [cite: 16]
+  assign M_AXI_AWBURST = 2'b01;   // INCR type [cite: 17]
+  assign M_AXI_AWLOCK  = 2'b00;   // Normal access
+  assign M_AXI_AWCACHE = 4'b0011; // Bufferable and Modifiable [cite: 17]
   assign M_AXI_AWPROT  = 3'h0;
   assign M_AXI_AWQOS   = 4'h0;
-  assign M_AXI_AWUSER  = 'b0;
+  assign M_AXI_AWUSER  = {C_M_AXI_AWUSER_WIDTH{1'b0}};
 
-  // Write Data(W)
-  assign M_AXI_WUSER   = 'b0;
+  //-------------------------------------------------------------------------
+  // AXI4 Master Interface Fixed Signals (Write Data Channel)
+  //-------------------------------------------------------------------------
+  assign M_AXI_WUSER   = {C_M_AXI_WUSER_WIDTH{1'b0}};
 
-  // Read Address
-  assign M_AXI_ARID    = 'b0;
-  assign M_AXI_ARSIZE  = 3'b010; // 4 Byte (32bit)
-  assign M_AXI_ARBURST = 2'b01;  // INCR
-  assign M_AXI_ARLOCK  = 1'b0;
-  assign M_AXI_ARCACHE = 4'b0011;
+  //-------------------------------------------------------------------------
+  // AXI4 Master Interface Fixed Signals (Read Address Channel)
+  //-------------------------------------------------------------------------
+  assign M_AXI_ARID    = {C_M_AXI_THREAD_ID_WIDTH{1'b0}};
+  assign M_AXI_ARSIZE  = 3'b010;  // 4 Bytes (32bit) [cite: 20]
+  assign M_AXI_ARBURST = 2'b01;   // INCR type [cite: 20]
+  assign M_AXI_ARLOCK  = 2'b00;
+  assign M_AXI_ARCACHE = 4'b0011; // Bufferable and Modifiable [cite: 21]
   assign M_AXI_ARPROT  = 3'h0;
   assign M_AXI_ARQOS   = 4'h0;
-  assign M_AXI_ARUSER  = 'b0;
+  assign M_AXI_ARUSER  = {C_M_AXI_ARUSER_WIDTH{1'b0}};
 
-  // ACLK で同期化したリセット信号 ARST
+  //-------------------------------------------------------------------------
+  // Reset Synchronization (ACLK Domain)
+  //-------------------------------------------------------------------------
   reg [1:0] arst_ff;
   always @(posedge ACLK) begin
     arst_ff <= {arst_ff[0], ~ARESETN};
   end
-  wire ARST = arst_ff[1];
+  wire ARST = arst_ff[1];  // Active High Reset [cite: 22, 23]
 
-  // RESOL を FF に取り込んでから利用
+  //-------------------------------------------------------------------------
+  // Resolution Synchronization
+  //-------------------------------------------------------------------------
   reg [1:0] RESOL_ff;
   always @(posedge ACLK) begin
     RESOL_ff <= RESOL;
   end
 
+  //-------------------------------------------------------------------------
+  // Internal Signals
+  //-------------------------------------------------------------------------
+  // Register Control <-> VRAM Control Interface
+  wire        draw_busy;  // 描画実行中フラグ (DRAWSTAT.BUSY)
+  wire        cmd_fifo_empty;  // コマンドFIFO空フラグ
+  wire        cmd_fifo_full;  // コマンドFIFO満杯フラグ (Option)
+  wire        cmd_fifo_rd_en;  // コマンドFIFO読み出し要求
+  wire [31:0] cmd_fifo_rdata;  // コマンドFIFO読み出しデータ
 
-  //---------------------------------------------------------------------------
-  // signals
-  //---------------------------------------------------------------------------
-  wire        soft_rst;  // ソフトリセット (DRAWCTRL.RST)
+  //-------------------------------------------------------------------------
+  // Submodule Instances
+  //-------------------------------------------------------------------------
 
-  // レジスタ制御 -> メイン制御
-  wire        drw_start;  // DRAWCTRL.EXE
-  wire        drw_busy;  // DRAWSTAT.BUSY
-  wire        drw_irq_in;  // 割り込み要求
-
-  // コマンドFIFO関連
-  wire        cmd_fifo_wr;
-  wire [31:0] cmd_fifo_wdata;
-  wire        cmd_fifo_rd;
-  wire [31:0] cmd_fifo_rdata;
-  wire        cmd_fifo_empty;
-  wire        cmd_fifo_full;
-  wire [10:0] cmd_fifo_count;  // 2048深度なので11bit必要
-
-  // メイン制御 -> VRAM制御 (ライン単位のキック)
-  wire        line_start;  // 1ライン処理開始
-  wire        line_busy;  // 1ライン処理中
-  wire [31:0] line_addr_dst;  // 書き込み先(背景)アドレス
-  wire [31:0] line_addr_src;  // テクスチャアドレス
-  wire [10:0] line_len;  // ピクセル数 (11bit幅: max 2048)
-
-  // メイン制御 -> ピクセル処理 (パラメータ)
-  wire [31:0] param_fcolor;  // 描画色
-  wire        param_blend;  // ブレンド有効
-  wire        cmd_mode;
-  // ...
-
-  // 画像データFIFO関連
-  // SRC (Texture)
-  wire src_fifo_wr, src_fifo_rd;
-  wire [31:0] src_fifo_wdata, src_fifo_rdata;
-  wire src_fifo_empty, src_fifo_full;
-  wire [11:0] src_fifo_count;  // FIFO IPのdata_countは12bit
-
-  // DST (Background Read)
-  wire dst_fifo_wr, dst_fifo_rd;
-  wire [31:0] dst_fifo_wdata, dst_fifo_rdata;
-  wire dst_fifo_empty, dst_fifo_full;
-  wire [11:0] dst_fifo_count;
-
-  // WRT (Write Back)
-  wire wrt_fifo_wr, wrt_fifo_rd;
-  wire [31:0] wrt_fifo_wdata, wrt_fifo_rdata;
-  wire wrt_fifo_empty, wrt_fifo_full;
-  wire [11:0] wrt_fifo_count;
-
-
-
-  //---------------------------------------------------------------------------
-  // submodules
-  //---------------------------------------------------------------------------
-
-  // 1. register control
-  drw_regctrl u_drw_regctrl (
+  // 描画レジスタ制御 & コマンドFIFO管理
+  draw_regctrl u_draw_regctrl (
       .CLK (ACLK),
       .ARST(ARST),
 
-      // RegBus
+      // レジスタバス I/F
       .WRADDR(WRADDR),
       .BYTEEN(BYTEEN),
       .WREN  (WREN),
@@ -198,173 +170,59 @@ module draw #(
       .RDEN  (RDEN),
       .RDATA (RDATA),
 
-      // Status / Control
-      .DRW_BUSY   (drw_busy),
-      .DRW_IRQ_IN (drw_irq_in),
-      .DRW_IRQ_OUT(DRW_IRQ),
-      .SOFT_RST   (soft_rst),
-      .DRW_START  (drw_start),
+      // ステータス・割り込み
+      .DRAW_BUSY(draw_busy),
+      .DRW_IRQ  (DRW_IRQ),
 
-      // Command FIFO Interface (Push)
-      .CMD_FIFO_FULL (cmd_fifo_full),
-      .CMD_FIFO_WR   (cmd_fifo_wr),
-      .CMD_FIFO_WDATA(cmd_fifo_wdata),
-      .CMD_FIFO_COUNT(cmd_fifo_count)
+      // コマンドFIFO I/F (Write側は内部、Read側を出力)
+      .CMD_RD_EN(cmd_fifo_rd_en),
+      .CMD_RDATA(cmd_fifo_rdata),
+      .CMD_EMPTY(cmd_fifo_empty),
+      .CMD_FULL (cmd_fifo_full)
   );
 
-  // 2. command buffer (FIFO)
-  // 32bit x 2048depth
-  fifo_32in32out_2048depth u_cmd_fifo (
-      .clk       (ACLK),
-      .rst       (ARST | soft_rst),
-      .din       (cmd_fifo_wdata),
-      .wr_en     (cmd_fifo_wr),
-      .rd_en     (cmd_fifo_rd),
-      .dout      (cmd_fifo_rdata),
-      .full      (cmd_fifo_full),
-      .empty     (cmd_fifo_empty),
-      .data_count({1'b0, cmd_fifo_count})  // data_countが12bitの場合
-  );
+  // 描画VRAM制御 & コマンド解析・実行エンジン
+  draw_vramctrl u_draw_vramctrl (
+      .CLK  (ACLK),
+      .ARST (ARST),
+      .RESOL(RESOL_ff),
 
-  // 3. main control (analyze command & generate address)
-  drw_mainctrl u_drw_mainctrl (
-      .CLK      (ACLK),
-      .ARST     (ARST),
-      .SOFT_RST (soft_rst),
-      .DRW_START(drw_start),  // 開始トリガ
-      .DRW_BUSY (drw_busy),   // Busy出力
-      .DRW_IRQ  (drw_irq_in), // 完了割り込み
+      // コマンドFIFO I/F (Read側)
+      .CMD_RD_EN(cmd_fifo_rd_en),
+      .CMD_RDATA(cmd_fifo_rdata),
+      .CMD_EMPTY(cmd_fifo_empty),
 
-      // Command FIFO Interface (Pop)
-      .CMD_FIFO_EMPTY(cmd_fifo_empty),
-      .CMD_FIFO_RD   (cmd_fifo_rd),
-      .CMD_FIFO_RDATA(cmd_fifo_rdata),
+      // ステータス出力
+      .DRAW_BUSY(draw_busy),
 
-      // VRAM Control Interface (Line Kick)
-      .LINE_START   (line_start),
-      .LINE_BUSY    (line_busy),
-      .LINE_ADDR_DST(line_addr_dst),
-      .LINE_ADDR_SRC(line_addr_src),
-      .LINE_LEN     (line_len),
-      .CMD_MODE     (cmd_mode),
-
-      // Parameters to Pixel Proc
-      .PARAM_FCOLOR(param_fcolor),
-      .PARAM_BLEND (param_blend)
-  );
-
-  // 4. VRAM control (AXI Master & FIFO Control)
-  drw_vramctrl u_drw_vramctrl (
-      .CLK (ACLK),
-      .ARST(ARST | soft_rst),
-
-      // AXI4 Read/Write Signals
-      .M_AXI_ARADDR (M_AXI_ARADDR),
-      .M_AXI_ARLEN  (M_AXI_ARLEN),
-      .M_AXI_ARVALID(M_AXI_ARVALID),
-      .M_AXI_ARREADY(M_AXI_ARREADY),
-      .M_AXI_RDATA  (M_AXI_RDATA),
-      .M_AXI_RLAST  (M_AXI_RLAST),
-      .M_AXI_RVALID (M_AXI_RVALID),
-      .M_AXI_RREADY (M_AXI_RREADY),
-
+      // AXI4 Master Write Address
       .M_AXI_AWADDR (M_AXI_AWADDR),
       .M_AXI_AWLEN  (M_AXI_AWLEN),
       .M_AXI_AWVALID(M_AXI_AWVALID),
       .M_AXI_AWREADY(M_AXI_AWREADY),
-      .M_AXI_WDATA  (M_AXI_WDATA),
-      .M_AXI_WSTRB  (M_AXI_WSTRB),
-      .M_AXI_WLAST  (M_AXI_WLAST),
-      .M_AXI_WVALID (M_AXI_WVALID),
-      .M_AXI_WREADY (M_AXI_WREADY),
-      .M_AXI_BVALID (M_AXI_BVALID),
-      .M_AXI_BREADY (M_AXI_BREADY),
 
-      // Main Control Interface
-      .LINE_START   (line_start),
-      .LINE_BUSY    (line_busy),
-      .LINE_ADDR_DST(line_addr_dst),
-      .LINE_ADDR_SRC(line_addr_src),
-      .LINE_LEN     (line_len),
-      .PARAM_BLEND  (param_blend),    // ブレンド有効時はDST読み出しが必要
-      .CMD_MODE     (cmd_mode),
+      // AXI4 Master Write Data
+      .M_AXI_WDATA (M_AXI_WDATA),
+      .M_AXI_WSTRB (M_AXI_WSTRB),
+      .M_AXI_WLAST (M_AXI_WLAST),
+      .M_AXI_WVALID(M_AXI_WVALID),
+      .M_AXI_WREADY(M_AXI_WREADY),
 
-      // Data FIFO Interfaces
-      // SRC (Write to FIFO)
-      .SRC_FIFO_FULL (src_fifo_full),
-      .SRC_FIFO_WR   (src_fifo_wr),
-      .SRC_FIFO_WDATA(src_fifo_wdata),
-      // DST (Write to FIFO)
-      .DST_FIFO_FULL (dst_fifo_full),
-      .DST_FIFO_WR   (dst_fifo_wr),
-      .DST_FIFO_WDATA(dst_fifo_wdata),
-      // WRT (Read from FIFO)
-      .WRT_FIFO_EMPTY(wrt_fifo_empty),
-      .WRT_FIFO_RD   (wrt_fifo_rd),
-      .WRT_FIFO_RDATA(wrt_fifo_rdata),
-      .WRT_FIFO_COUNT(wrt_fifo_count)
-  );
+      // AXI4 Master Write Response
+      .M_AXI_BVALID(M_AXI_BVALID),
+      .M_AXI_BREADY(M_AXI_BREADY),
 
-  // 5. Data Fifo (x3)
-  // SRC FIFO (Texture Data)
-  fifo_32in32out_2048depth u_src_fifo (
-      .clk(ACLK),
-      .rst(ARST | soft_rst),
-      .din(src_fifo_wdata),
-      .wr_en(src_fifo_wr),
-      .full(src_fifo_full),
-      .data_count(src_fifo_count),
-      .dout(src_fifo_rdata),
-      .rd_en(src_fifo_rd),
-      .empty(src_fifo_empty)
-  );
-  // DST FIFO (Background Data)
-  fifo_32in32out_2048depth u_dst_fifo (
-      .clk(ACLK),
-      .rst(ARST | soft_rst),
-      .din(dst_fifo_wdata),
-      .wr_en(dst_fifo_wr),
-      .full(dst_fifo_full),
-      .data_count(dst_fifo_count),
-      .dout(dst_fifo_rdata),
-      .rd_en(dst_fifo_rd),
-      .empty(dst_fifo_empty)
-  );
-  // WRT FIFO (Result Data)
-  fifo_32in32out_2048depth u_wrt_fifo (
-      .clk(ACLK),
-      .rst(ARST | soft_rst),
-      .din(wrt_fifo_wdata),
-      .wr_en(wrt_fifo_wr),
-      .full(wrt_fifo_full),
-      .data_count(wrt_fifo_count),
-      .dout(wrt_fifo_rdata),
-      .rd_en(wrt_fifo_rd),
-      .empty(wrt_fifo_empty)
-  );
+      // AXI4 Master Read Address (STEP-2以降で使用)
+      .M_AXI_ARADDR (M_AXI_ARADDR),
+      .M_AXI_ARLEN  (M_AXI_ARLEN),
+      .M_AXI_ARVALID(M_AXI_ARVALID),
+      .M_AXI_ARREADY(M_AXI_ARREADY),
 
-  // 6. pixel proc
-  drw_pixelproc u_drw_pixelproc (
-      .CLK (ACLK),
-      .ARST(ARST | soft_rst),
-
-      // Parameters
-      .PARAM_FCOLOR(param_fcolor),
-      .PARAM_BLEND(param_blend),
-      .CMD_MODE(cmd_mode),
-
-      // FIFO Interface
-      .SRC_FIFO_EMPTY(src_fifo_empty),
-      .SRC_FIFO_RD   (src_fifo_rd),
-      .SRC_FIFO_RDATA(src_fifo_rdata),
-
-      .DST_FIFO_EMPTY(dst_fifo_empty),
-      .DST_FIFO_RD   (dst_fifo_rd),
-      .DST_FIFO_RDATA(dst_fifo_rdata),
-
-      .WRT_FIFO_FULL (wrt_fifo_full),
-      .WRT_FIFO_WR   (wrt_fifo_wr),
-      .WRT_FIFO_WDATA(wrt_fifo_wdata)
+      // AXI4 Master Read Data (STEP-2以降で使用)
+      .M_AXI_RDATA (M_AXI_RDATA),
+      .M_AXI_RLAST (M_AXI_RLAST),
+      .M_AXI_RVALID(M_AXI_RVALID),
+      .M_AXI_RREADY(M_AXI_RREADY)
   );
 
 endmodule
