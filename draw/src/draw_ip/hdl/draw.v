@@ -168,7 +168,7 @@ module draw #(
       .CLK      (ACLK),
       .ARST     (ARST),
       .RESOL    (RESOL_ff),
-      .REG_EXE  (reg_exe),         // 追加: 実行開始信号
+      .REG_EXE  (reg_exe),         // 実行開始信号
       .CMD_RD_EN(cmd_fifo_rd_en),
       .CMD_RDATA(cmd_fifo_rdata),
       .CMD_EMPTY(cmd_fifo_empty),

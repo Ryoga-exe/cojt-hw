@@ -64,7 +64,7 @@ module draw_vramctrl (
   logic [10:0] rem_pixels_in_line;
   logic [31:0] current_wr_addr;
 
-  // 実行許可フラグ (REG_EXEでセット、IDLEに戻るまで維持)
+  // 実行許可フラグ
   logic running;
 
   // ステートマシン
@@ -91,7 +91,7 @@ module draw_vramctrl (
 
   state_t state;
 
-  // どのコマンドのパラメータを取得中かを示すフラグ
+  // どのコマンドのパラメータを取得中か
   typedef enum logic [1:0] {
     CMD_NONE,
     CMD_FRAME,
@@ -105,20 +105,42 @@ module draw_vramctrl (
   //-------------------------------------------------------------------------
   always_ff @(posedge CLK or posedge ARST) begin
     if (ARST) begin
-      state <= S_IDLE;
-      CMD_RD_EN <= 1'b0;
-      DRAW_BUSY <= 1'b0;
-      running <= 1'b0;
-      processing_cmd <= CMD_NONE;
+      // 制御信号初期化
+      state              <= S_IDLE;
+      CMD_RD_EN          <= 1'b0;
+      DRAW_BUSY          <= 1'b0;
+      running            <= 1'b0;
+      processing_cmd     <= CMD_NONE;
 
-      M_AXI_AWVALID <= 1'b0;
-      M_AXI_WVALID <= 1'b0;
-      M_AXI_BREADY <= 1'b0;
-      M_AXI_AWADDR <= '0;
-      M_AXI_AWLEN <= '0;
-      M_AXI_WDATA <= '0;
-      M_AXI_WSTRB <= 4'b1111;
-      M_AXI_WLAST <= 1'b0;
+      // AXI信号初期化
+      M_AXI_AWVALID      <= 1'b0;
+      M_AXI_WVALID       <= 1'b0;
+      M_AXI_BREADY       <= 1'b0;
+      M_AXI_AWADDR       <= '0;
+      M_AXI_AWLEN        <= '0;
+      M_AXI_WDATA        <= '0;
+      M_AXI_WSTRB        <= 4'b1111;
+      M_AXI_WLAST        <= 1'b0;
+
+      // 内部データレジスタ初期化 (X伝播防止)
+      r_vram_base        <= '0;
+      r_frm_width        <= '0;
+      r_frm_height       <= '0;
+      r_area_posx        <= '0;
+      r_area_posy        <= '0;
+      r_area_sizx        <= '0;
+      r_area_sizy        <= '0;
+      r_fcolor           <= '0;
+      r_pat_dposx        <= '0;
+      r_pat_dposy        <= '0;
+      r_pat_dsizx        <= '0;
+      r_pat_dsizy        <= '0;
+      current_opcode     <= '0;
+      line_counter       <= '0;
+      pixel_counter      <= '0;
+      rem_pixels_in_line <= '0;
+      current_wr_addr    <= '0;
+
     end else begin
       // 実行開始トリガー
       if (REG_EXE) running <= 1'b1;
@@ -129,7 +151,6 @@ module draw_vramctrl (
         //-------------------------------------------------------------
         S_IDLE: begin
           CMD_RD_EN <= 1'b0;
-          // FIFOにデータがあり、かつ実行許可が出ている場合
           if (!CMD_EMPTY && (running || REG_EXE)) begin
             DRAW_BUSY <= 1'b1;
             state <= S_FETCH_REQ;
@@ -140,7 +161,7 @@ module draw_vramctrl (
         end
 
         //-------------------------------------------------------------
-        // Opcode Fetch
+        // Opcode Fetch (Latency=1)
         //-------------------------------------------------------------
         S_FETCH_REQ: begin
           CMD_RD_EN <= 1'b1;  // Read Request
@@ -149,7 +170,7 @@ module draw_vramctrl (
 
         S_FETCH_DAT: begin
           CMD_RD_EN <= 1'b0;
-          current_opcode <= CMD_RDATA;  // Capture Data (Latency 1)
+          current_opcode <= CMD_RDATA;  // Capture Data
           state <= S_DECODE;
         end
 
@@ -168,8 +189,8 @@ module draw_vramctrl (
               state <= S_PRM_REQ_1;
             end
             8'h23: begin  // SETFCOLOR (2 words)
-              state <= S_PRM_REQ_1;  // Special case: only 1 param word
-              processing_cmd <= CMD_NONE;  // No 2nd param
+              state <= S_PRM_REQ_1;
+              processing_cmd <= CMD_NONE;
             end
             8'h81: begin  // PATBLT (3 words)
               processing_cmd <= CMD_PAT;
@@ -184,7 +205,7 @@ module draw_vramctrl (
         end
 
         //-------------------------------------------------------------
-        // Parameter 1 Fetch (SETFCOLOR finishes here)
+        // Parameter 1 Fetch
         //-------------------------------------------------------------
         S_PRM_REQ_1: begin
           CMD_RD_EN <= 1'b1;
@@ -211,7 +232,6 @@ module draw_vramctrl (
             default: state <= S_IDLE;
           endcase
 
-          // If command needs 2nd parameter
           if (current_opcode[7:0] != 8'h23) begin
             state <= S_PRM_REQ_2;
           end
@@ -227,7 +247,6 @@ module draw_vramctrl (
 
         S_PRM_DAT_2: begin
           CMD_RD_EN <= 1'b0;
-          // Store Parameter 2
           case (processing_cmd)
             CMD_FRAME: begin
               r_frm_width <= CMD_RDATA[26:16];
@@ -242,7 +261,6 @@ module draw_vramctrl (
             CMD_PAT: begin
               r_pat_dsizx <= CMD_RDATA[26:16];
               r_pat_dsizy <= CMD_RDATA[10:0];
-              // Start PATBLT Execution
               line_counter <= 0;
               state <= S_PAT_LINE_INIT;
             end
@@ -254,8 +272,7 @@ module draw_vramctrl (
         // PATBLT Execution (Line Loop)
         //-------------------------------------------------------------
         S_PAT_LINE_INIT: begin
-          // Address Calculation
-          current_wr_addr <= r_vram_base + 
+          current_wr_addr <= r_vram_base +
                         (( (r_pat_dposy + line_counter) * r_frm_width + r_pat_dposx ) << 2);
           rem_pixels_in_line <= r_pat_dsizx;
           state <= S_PAT_SUB_START;
@@ -264,6 +281,7 @@ module draw_vramctrl (
         // Burst Split Calculation
         S_PAT_SUB_START: begin
           M_AXI_AWADDR <= current_wr_addr;
+          // Max burst len 256 (AWLEN=255)
           if (rem_pixels_in_line > 256) begin
             M_AXI_AWLEN <= 8'd255;
           end else begin

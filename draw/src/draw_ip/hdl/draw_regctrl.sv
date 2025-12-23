@@ -110,13 +110,13 @@ module draw_regctrl (
       .clk       (CLK),
       .din       (WDATA),
       .rd_en     (CMD_RD_EN),
-      .rst       (internal_rst),  // Async or Sync reset (depends on IP config)
+      .rst       (internal_rst),  // reset (Active High)
       .wr_en     (cmd_fifo_we),
       .dout      (CMD_RDATA),
       .empty     (CMD_EMPTY),
       .full      (CMD_FULL),
       .overflow  (),              // Unconnected
-      .valid     (),              // Unconnected (State machine waits 1 cycle)
+      .valid     (),              // Unconnected
       .underflow (),              // Unconnected
       .data_count(cmd_count)
   );
