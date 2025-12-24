@@ -1,0 +1,155 @@
+/// Register controller for draw circuit
+///
+/// Register map (base 0x2000)
+/// - 0x2000 DRAWCTRL     [W] bit1:RST (soft reset), bit0:EXE (start)
+/// - 0x2004 DRAWSTAT     [R] bit18-16:ERROR, bit0:BUSY
+/// - 0x2008 DRAWBUFSTAT  [R] bit17:FULL, bit16:EMPTY, bit10-0:CMDCNT
+/// - 0x200C DRAWCMD      [W] write pushes 32-bit command into FIFO
+/// - 0x2010 DRAWINT      [R/W] bit0:INTENBL, bit1:INTCLR (write 1 to clear IRQ)
+pub module drw_regctrl (
+    CLK : input clock,
+    ARST: input reset,
+
+    // Register bus
+    WRADDR: input  logic<16>,
+    BYTEEN: input  logic<4> ,
+    WREN  : input  logic    ,
+    WDATA : input  logic<32>,
+    RDADDR: input  logic<16>,
+    RDEN  : input  logic    ,
+    RDATA : output logic<32>,
+
+    // Status / interrupt
+    INT    : input  logic,
+    BUSY   : input  logic,
+    DRW_IRQ: output logic,
+
+    // Soft reset / start
+    DRWRG_RSTS : output logic,
+    DRWRG_START: output logic,
+
+    // Command FIFO write-side
+    CMDFIFO_FULL : input  logic    ,
+    CMDFIFO_COUNT: input  logic<16>,
+    CMDFIFO_WREN : output logic    ,
+    CMDFIFO_WDATA: output logic<32>,
+) {
+    // ---------------------------------------------------------------------
+    // write decode (0x2xxx)
+    // ---------------------------------------------------------------------
+    let write_reg: logic = WREN && (WRADDR[15:12] == 4'h2);
+    let bWriteB0 : logic = write_reg & BYTEEN[0];
+    // let bWriteB1 : logic = write_reg & BYTEEN[1];
+    // let bWriteB2 : logic = write_reg & BYTEEN[2];
+    // let bWriteB3 : logic = write_reg & BYTEEN[3];
+
+    // word address select (WRADDR[11:2])
+    let bSelectReg00: logic = (WRADDR[11:2] == 10'h000); // 0x2000
+    // let bSelectReg04: logic = (WRADDR[11:2] == 10'h001); // 0x2004
+    // let bSelectReg08: logic = (WRADDR[11:2] == 10'h002); // 0x2008 (DRAWBUFSTAT, RO)
+    let bSelectReg0C: logic = (WRADDR[11:2] == 10'h003); // 0x200C (DRAWCMD, WO)
+    let bSelectReg10: logic = (WRADDR[11:2] == 10'h004); // 0x2010 (DRAWINT)
+
+    // ---------------------------------------------------------------------
+    // DRAWCTRL (0x2000): soft reset (bit1) + start (bit0)
+    // ---------------------------------------------------------------------
+    var reg_rsts: logic<4>;
+
+    assign DRWRG_RSTS = (reg_rsts != 4'h0);
+
+    // reg_rsts: 4-cycle assert
+    always_ff {
+        if_reset {
+            reg_rsts = 4'b0;
+        } else if bWriteB0 && bSelectReg00 {
+            reg_rsts = {3'b0, WDATA[1]};
+        } else {
+            reg_rsts = {reg_rsts[2:0], 1'b0};
+        }
+    }
+
+    // DRWRG_START: 1-cycle pulse when writing EXE=1
+    always_ff {
+        if_reset {
+            DRWRG_START = 1'b0;
+        } else if DRWRG_START {
+            DRWRG_START = 1'b0;
+        } else {
+            DRWRG_START = (bWriteB0 && bSelectReg00 && WDATA[0]);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // DRAWCMD (0x200C): push into command FIFO
+    // ---------------------------------------------------------------------
+    // Note: treat BYTEEN as "write strobe"; most SW will write full 32-bit anyway.
+    always_comb {
+        CMDFIFO_WREN  = (bWriteB0 && bSelectReg0C && !CMDFIFO_FULL);
+        CMDFIFO_WDATA = WDATA;
+    }
+
+    // ---------------------------------------------------------------------
+    // ERROR status (implementation-defined)
+    // - Here: set ERROR=1 when SW tries to push into a FULL command FIFO.
+    // ---------------------------------------------------------------------
+    var err: logic<3>;
+    always_ff {
+        if_reset {
+            err = 3'b000;
+        } else if DRWRG_RSTS {
+            err = 3'b000;
+        } else if bWriteB0 && bSelectReg0C && CMDFIFO_FULL {
+            err = 3'b001;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // DRAWINT (0x2010): interrupt enable + clear
+    // ---------------------------------------------------------------------
+    var ien: logic;
+    always_ff {
+        if_reset {
+            ien = 1'b0;
+        } else if DRWRG_RSTS {
+            ien = 1'b0;
+        } else if bWriteB0 && bSelectReg10 {
+            ien = WDATA[0];
+        }
+    }
+
+    // Interrupt latch:
+    // - set when INT asserted and enabled
+    // - clear when writing DRAWINT bit1=1
+    always_ff {
+        if_reset {
+            DRW_IRQ = 1'b0;
+        } else if DRWRG_RSTS {
+            DRW_IRQ = 1'b0;
+        } else if INT && ien {
+            DRW_IRQ = 1'b1;
+        } else if bWriteB0 && bSelectReg10 && WDATA[1] {
+            DRW_IRQ = 1'b0;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // register read mux (RDADDR[11:2])
+    // ---------------------------------------------------------------------
+    let read_in_range: logic = (RDADDR[15:12] == 4'h2);
+    let cmd_empty    : logic = (CMDFIFO_COUNT == 16'd0);
+
+    always_comb {
+        if !read_in_range {
+            RDATA = 32'h0;
+        } else {
+            RDATA = case RDADDR[11:2] {
+                10'h000: 32'h0, // 0x2000 DRAWCTRL
+                10'h001: {13'b0, err[2:0], 15'b0, BUSY}, // 0x2004 DRAWSTAT
+                10'h002: {14'b0, CMDFIFO_FULL, cmd_empty, 5'b0, CMDFIFO_COUNT[10:0]}, // 0x2008 DRAWBUFSTAT
+                10'h003: 32'h0, // 0x200C DRAWCMD
+                10'h004: {31'b0, ien}, // 0x2010 DRAWINT
+                default: 32'h0,
+            };
+        }
+    }
+}
