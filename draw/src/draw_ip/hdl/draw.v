@@ -314,7 +314,3 @@ module draw #(
 
 
 endmodule
-
-
-
-
