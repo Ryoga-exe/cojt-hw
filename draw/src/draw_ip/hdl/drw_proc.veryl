@@ -244,10 +244,17 @@ pub module drw_proc (
                     // - word2: VRAMADR
                     // - word3: WIDTH[21:11] HEIGHT[10:0]
 
-                    // TODO: implement
+                    if cmd_fire {
+                        reg_frame_base = CMDFIFO_RDATA;
+                        state          = State::setframe3;
+                    }
                 }
                 State::setframe3: {
-                    // TODO: implement
+                    if cmd_fire {
+                        reg_frame_w = CMDFIFO_RDATA[21:11];
+                        reg_frame_h = CMDFIFO_RDATA[10:0];
+                        state       = State::fetch;
+                    }
                 }
                 State::setarea2: {
                     // SETDRAWAREA (3 words)
