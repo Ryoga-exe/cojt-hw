@@ -297,7 +297,43 @@ pub module drw_proc (
                 }
                 // DRAW: stream pixels to vramctrl
                 State::draw: {
-                    // TODO: implement
+                    if DRWVC_WREADY {
+                        // accept 1 beat
+                        let end_of_burst: logic = burst_idx == (burst_len - 5'd1);
+                        let end_of_line : logic = (cur_x + 12'd1) == draw_x1;
+                        let end_of_rect : logic = end_of_line && ((cur_y + 12'd1) == draw_y1);
+
+                        // advance pixel in any case
+                        addr_reg  += 32'd4;
+                        cur_x     += 12'd1;
+                        burst_idx += 5'd1;
+
+                        if end_of_burst {
+                            // new burst starts next
+                            burst_idx = 5'd0;
+
+                            if end_of_line {
+                                // go to next line (or finish)
+                                if end_of_rect {
+                                    state = State::fetch;
+                                } else {
+                                    cur_y += 12'd1;
+                                    cur_x =  draw_x0;
+
+                                    addr_reg  = pix_addr(reg_frame_base, reg_frame_w, draw_x0, cur_y + 12'd1);
+                                    burst_len = min16(draw_x1 - draw_x0);
+                                    state     = State::draw;
+                                }
+                            } else {
+                                // continue same line: remaining = x1 - (x+1)
+                                burst_len = min16(draw_x1 - (cur_x + 12'd1));
+                                state     = State::draw;
+                            }
+                        } else {
+                            // stay in same burst
+                            state = State::draw;
+                        }
+                    }
                 }
                 // EODL
                 State::eodl_done: {
