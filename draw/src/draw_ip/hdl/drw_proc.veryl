@@ -301,9 +301,76 @@ pub module drw_proc (
                     }
                 }
                 State::patblt3: {
-                    // TODO: implement
                     if cmd_fire {
+                        // TODO: consider move these let things to always_comb block
+
                         // capture size directly from the word we just poped
+                        let dsizx_new: logic<11> = CMDFIFO_RDATA[22:12];
+                        let dsizy_new: logic<11> = CMDFIFO_RDATA[10:0];
+
+                        // compute clipped region and initialize drawing
+                        // rect: [dposx, dposx+dsizx) [dposy, dposy+dsizy)
+                        // clip with draw area and frame bounds
+
+                        let patx32 : signed logic<32> = $signed({{pat_dposx[11] repeat 20}, pat_dposx}); // 12 -> 32 (signed)
+                        let paty32 : signed logic<32> = $signed({{pat_dposy[11] repeat 20}, pat_dposy}); // 12 -> 32 (signed)
+                        let areax32: signed logic<32> = $signed({{reg_area_posx[10] repeat 21}, reg_area_posx}); // 11 -> 32 (signed)
+                        let areay32: signed logic<32> = $signed({{reg_area_posy[10] repeat 21}, reg_area_posy}); // 11 -> 32 (signed)
+
+                        // rect: [dpos, dpos+dsiz)
+                        let rx0: signed logic<32> = patx32;
+                        let ry0: signed logic<32> = paty32;
+                        let rx1: signed logic<32> = patx32 + $signed({21'd0, dsizx_new}); // 0-extend then signed
+                        let ry1: signed logic<32> = paty32 + $signed({21'd0, dsizy_new}); // 0-extend then signed
+
+                        // draw area: [pos, pos+size)
+                        let ax0: signed logic<32> = areax32;
+                        let ay0: signed logic<32> = areay32;
+                        let ax1: signed logic<32> = areax32 + $signed({21'd0, reg_area_sizx}); // size is unsigned -> 0-extend
+                        let ay1: signed logic<32> = areay32 + $signed({21'd0, reg_area_sizy});
+
+
+                        // frame bounds: [0, w) [0, h)
+                        let fx0: signed logic<32> = 32'sd0;
+                        let fy0: signed logic<32> = 32'sd0;
+                        let fx1: signed logic<32> = $signed({21'd0, reg_frame_w}); // unsigned -> 0-extend then signed
+                        let fy1: signed logic<32> = $signed({21'd0, reg_frame_h});
+
+                        // intersection
+                        let cx0: signed logic<32> = if rx0 <: ax0 ? ax0 : (if rx0 <: fx0 ? fx0 : rx0);
+                        let cy0: signed logic<32> = if ry0 <: ay0 ? ay0 : (if ry0 <: fy0 ? fy0 : ry0);
+                        let cx1: signed logic<32> = if rx1 >: ax1 ? ax1 : (if rx1 >: fx1 ? fx1 : rx1);
+                        let cy1: signed logic<32> = if ry1 >: ay1 ? ay1 : (if ry1 >: fy1 ? fy1 : ry1);
+
+                        if (cx0 >= cx1) || (cy0 >= cy1) {
+                            // nothing to draw
+                            state = State::fetch;
+                        } else {
+                            // convert to unsigned 12-bit (safe because clipped with frame [0, w/h))
+                            let x0_u  : logic       <12> = cx0[11:0];
+                            let x1_u  : logic       <12> = cx1[11:0];
+                            let y0_u  : logic       <12> = cy0[11:0];
+                            let y1_u  : logic       <12> = cy1[11:0];
+                            let remx  : signed logic<32> = cx1 - cx0;
+                            let remx_u: logic       <12> = remx[11:0];
+
+                            draw_x0 = x0_u;
+                            draw_x1 = x1_u;
+                            draw_y0 = y0_u;
+                            draw_y1 = y1_u;
+
+                            cur_x = x0_u;
+                            cur_y = y0_u;
+
+                            // init address to (cx0, cy0)
+                            addr_reg = pix_addr(reg_frame_base, reg_frame_w, x0_u, y0_u);
+
+                            // init burst
+                            burst_idx = 5'd0;
+                            burst_len = min16(remx_u); // min(16, x1-x0)
+
+                            state = State::draw;
+                        }
                     }
                 }
                 // DRAW: stream pixels to vramctrl
