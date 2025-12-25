@@ -283,7 +283,10 @@ pub module drw_proc (
                 State::eodl_done: {
                     // EODL
 
-                    // TODO: implement
+                    // drawing は State::draw に入っている間しか起きないので、
+                    // ここまで到達していれば proc 側の書き込み生成は完了しているはず
+                    INT   = 1'b1;
+                    state = State::idle;
                 }
                 default: {
                     state = State::idle;
