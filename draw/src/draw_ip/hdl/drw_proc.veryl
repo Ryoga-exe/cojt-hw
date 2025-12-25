@@ -234,16 +234,14 @@ pub module drw_proc (
                 State::idle: {
                     // wait for START
                 }
+                // fetch opcode word
                 State::fetch: {
-                    // fetch opcode word
-
                     // TODO: implement
                 }
+                // SETFRAME (3 words)
+                // - word2: VRAMADR
+                // - word3: WIDTH[21:11] HEIGHT[10:0]
                 State::setframe2: {
-                    // SETFRAME (3 words)
-                    // - word2: VRAMADR
-                    // - word3: WIDTH[21:11] HEIGHT[10:0]
-
                     if cmd_fire {
                         reg_frame_base = CMDFIFO_RDATA;
                         state          = State::setframe3;
@@ -256,11 +254,10 @@ pub module drw_proc (
                         state       = State::fetch;
                     }
                 }
+                // SETDRAWAREA (3 words)
+                // - word2: POSX[21:11] (signed11) POSY[10:0] (signed11)
+                // - word3: SIZX[21:11] (u11)      SIZY[10:0] (u11)
                 State::setarea2: {
-                    // SETDRAWAREA (3 words)
-                    // - word2: POSX[21:11] (signed11) POSY[10:0] (signed11)
-                    // - word3: SIZX[21:11] (u11)      SIZY[10:0] (u11)
-
                     if cmd_fire {
                         reg_area_posx = $signed(CMDFIFO_RDATA[21:11]);
                         reg_area_posy = $signed(CMDFIFO_RDATA[10:0]);
@@ -274,30 +271,26 @@ pub module drw_proc (
                         state         = State::fetch;
                     }
                 }
+                // SETFCOLOR (2 words)
+                // - word2: A[31:24] R[23:16] G[15:8] B[7:0]
                 State::setcolor2: {
-                    // SETFCOLOR (2 words)
-                    // - word2: A[31:24] R[23:16] G[15:8] B[7:0]
-
                     // TODO: implement
                 }
+                // PATBLT (3 words)
+                // - word2: DPOSX[23:12] (signed12), DPOSY[11:0] (signed12)
+                // - word3: DSIZX[22:12] (u11),      DSIZY[10:0] (u11)
                 State::patblt2: {
-                    // PATBLT (3 words)
-                    // - word2: DPOSX[23:12] (signed12), DPOSY[11:0] (signed12)
-                    // - word3: DSIZX[22:12] (u11),      DSIZY[10:0] (u11)
-
                     // TODO: implement
                 }
                 State::patblt3: {
                     // TODO: implement
                 }
+                // DRAW: stream pixels to vramctrl
                 State::draw: {
-                    // DRAW: stream pixels to vramctrl
-
                     // TODO: implement
                 }
+                // EODL
                 State::eodl_done: {
-                    // EODL
-
                     // drawing は State::draw に入っている間しか起きないので、
                     // ここまで到達していれば proc 側の書き込み生成は完了しているはず
                     INT   = 1'b1;
