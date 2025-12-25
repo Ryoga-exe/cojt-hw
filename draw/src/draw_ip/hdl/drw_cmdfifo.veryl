@@ -1,0 +1,42 @@
+/// Command FIFO wrapper
+pub module drw_cmdfifo (
+    CLK : input logic,
+    ARST: input reset,
+    RSTS: input reset, // soft reset
+
+    // write side (from drw_regctrl)
+    WREN : input  logic    ,
+    WDATA: input  logic<32>,
+    FULL : output logic    ,
+
+    // read side (to drw_proc)
+    RDEN : input  logic    ,
+    RDATA: output logic<32>,
+    EMPTY: output logic    ,
+
+    // level (for DRAWBUFSTAT)
+    COUNT: output logic<16>,
+) {
+    let rst: '_ default reset_sync_high = ARST | RSTS;
+
+    // data_count width depends on IP; 2048-depth needs 12 bits
+    var data_count: logic<12>;
+
+    inst u_fifo_cmd: $sv::fifo_32in32out_2048depth (
+        clk       : CLK       ,
+        din       : RDATA     ,
+        rd_en     : RDEN      ,
+        rst       : rst       ,
+        wr_en     : WREN      ,
+        dout      : RDATA     ,
+        empty     : EMPTY     ,
+        full      : FULL      ,
+        overflow  : _         ,
+        valid     : _         ,
+        underflow : _         ,
+        data_count: data_count,
+    );
+
+    assign COUNT = {4'b0, data_count};
+
+}
