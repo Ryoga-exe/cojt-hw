@@ -11,7 +11,7 @@ create_project $project_name $project_dir -part $part -force
 
 # --- Add RTL Sources -----------------------------------
 add_files -fileset sources_1 [glob target/draw_ip/hdl/*.sv]
-add_files -fileset sources_1 target/draw_ip/hdl/filter.v
+add_files -fileset sources_1 target/draw_ip/hdl/draw.v
 update_compile_order -fileset sources_1
 
 # --- Add FIFO ------------------------------------------
@@ -42,6 +42,7 @@ update_compile_order -fileset sources_1
 
 # --- Add Simulation Sources -----------------------------------
 add_files -fileset sim_1 [glob src/sim/tb/*.sv]
+add_files -fileset sim_1 [glob src/sim/*raw]
 
 update_compile_order -fileset sim_1
 

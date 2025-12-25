@@ -1,6 +1,8 @@
 // draw のテストベンチ (基本機能の確認)
 `timescale 1ns / 1ps
 
+`define VIPINST dut.design_1_i.axi_vip_0.inst
+
 import axi_vip_pkg::*;
 import design_1_axi_vip_0_0_pkg::*;
 
@@ -132,7 +134,7 @@ module tb_draw_pat_basic;
   endtask
 
   /* この宣言をex1〜ex4まで書き換えて検証する */
-  `define ex1 
+  `define ex1
   //`define ex2
   //`define ex3
   //`define ex4
