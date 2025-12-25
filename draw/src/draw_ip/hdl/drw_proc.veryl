@@ -236,7 +236,18 @@ pub module drw_proc (
                 }
                 // fetch opcode word
                 State::fetch: {
-                    // TODO: implement
+                    if cmd_fire {
+                        state = case CMDFIFO_RDATA[31:24] {
+                            OPC_NOP        : State::fetch,
+                            OPC_EODL       : State::eodl_done,
+                            OPC_SETFRAME   : State::setframe2,
+                            OPC_SETDRAWAREA: State::setarea2,
+                            OPC_SETFCOLOR  : State::setcolor2,
+                            OPC_SETBLENDOFF: State::fetch, // TODO: impl
+                            OPC_PATBLT     : State::patblt2,
+                            default        : State::fetch, // unknown opcode (treat as NOP)
+                        };
+                    }
                 }
                 // SETFRAME (3 words)
                 // - word2: VRAMADR
