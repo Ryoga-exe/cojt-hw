@@ -261,10 +261,18 @@ pub module drw_proc (
                     // - word2: POSX[21:11] (signed11) POSY[10:0] (signed11)
                     // - word3: SIZX[21:11] (u11)      SIZY[10:0] (u11)
 
-                    // TODO: implement
+                    if cmd_fire {
+                        reg_area_posx = $signed(CMDFIFO_RDATA[21:11]);
+                        reg_area_posy = $signed(CMDFIFO_RDATA[10:0]);
+                        state         = State::setarea3;
+                    }
                 }
                 State::setarea3: {
-                    // TODO: implement
+                    if cmd_fire {
+                        reg_area_sizx = CMDFIFO_RDATA[21:11];
+                        reg_area_sizy = CMDFIFO_RDATA[10:0];
+                        state         = State::fetch;
+                    }
                 }
                 State::setcolor2: {
                     // SETFCOLOR (2 words)
