@@ -1,0 +1,173 @@
+/// Command Analyzer and PATBLT generator
+///
+/// Commands
+/// - NOP         (0x00)
+/// - EODL        (0x0F)
+/// - SETFRAME    (0x20)
+/// - SETDRAWAREA (0x21)
+/// - SETFCOLOR   (0x23)
+pub module drw_proc (
+    CLK  : input clock           ,
+    ARST : input reset           ,
+    RSTS : input reset           , // soft reset
+    START: input logic           , // 1-cycle pulse
+    RESOL: input Resolution::Mode,
+
+    // command stream (from cmd FIFO)
+    CMDFIFO_EMPTY: input  logic    ,
+    CMDFIFO_RDATA: input  logic<32>,
+    CMDFIFO_RDEN : output logic    ,
+
+    // source data (for future BITBLT)
+    DRWVC_SDATAVLD: input logic    ,
+    DRWVC_SDATA   : input logic<32>,
+
+    // write stream to vramctrl
+    DRWVC_WREADY: input  logic    ,
+    WADDRVLD    : output logic    ,
+    WADDR       : output logic<32>,
+    WDATAVLD    : output logic    ,
+    WDATA       : output logic<32>,
+    WSTRB       : output logic<4> ,
+    WLAST       : output logic    ,
+
+    // status/interrupt
+    BUSY: output logic,
+    INT : output logic,
+) {
+    let rst: '_ default reset_sync_high = ARST | RSTS;
+
+    // ----------------------------
+    // opcode definitions
+    // ----------------------------
+    const OPC_NOP        : logic<8> = 8'h00;
+    const OPC_EODL       : logic<8> = 8'h0F;
+    const OPC_SETFRAME   : logic<8> = 8'h20;
+    const OPC_SETDRAWAREA: logic<8> = 8'h21;
+    const OPC_SETFCOLOR  : logic<8> = 8'h23;
+    const OPC_SETBLENDOFF: logic<8> = 8'h32;
+    const OPC_PATBLT     : logic<8> = 8'h81;
+
+    // internal burst split (beats)
+    const BURST_MAX: u32 = 16;
+
+    // ----------------------------
+    // internal state registers
+    // ----------------------------
+    enum State {
+        idle,
+        fetch,
+        setframe2,
+        setframe3,
+        setarea2,
+        setarea3,
+        setcolor2,
+        patblt2,
+        patblt3,
+        draw,
+        eodl_done,
+    }
+
+    var state: State;
+
+    // TODO: define Vec2 struct
+
+    // registers set by commands
+    var reg_frame_base: logic<32>;
+    var reg_frame_w   : logic<11>;
+    var reg_frame_h   : logic<11>;
+
+    var reg_area_posx: signed logic<11>;
+    var reg_area_posy: signed logic<11>;
+    var reg_area_sizx: logic       <11>;
+    var reg_area_sizy: logic       <11>;
+
+    var reg_fcolor: logic<32>; // ARGB8888
+
+    // PATBLT params
+    var pat_dposx: signed logic<12>;
+    var pat_dposy: signed logic<12>;
+
+    // draw (clipped) region [x0, x1) [y0, y1)
+    var draw_x0: logic<12>;
+    var draw_x1: logic<12>;
+    var draw_y0: logic<12>;
+    var draw_y1: logic<12>;
+
+    // iterators
+    var cur_x: logic<12>;
+    var cur_y: logic<12>;
+
+    // current pixel address (bytes)
+    var addr_reg: logic<32>;
+
+    // burst control
+    var burst_len: logic<5>; // 1..16
+    var burst_idx: logic<5>; // 0..15
+
+    // helper: min(16, a)
+    function min16 (
+        a: input logic<12>,
+    ) -> logic<5> {
+        return if a >= 12'd16 ? 5'd16 : a[4:0];
+    }
+
+    // helper: compute address of (x, y) in bytes
+    function pix_addr (
+        base : input logic<32>,
+        width: input logic<11>,
+        x    : input logic<12>,
+        y    : input logic<12>,
+    ) -> logic<32> {
+        let idx: logic<32> = (y * width) + x;
+        return base + (idx << 2);
+    }
+
+    // ----------------------------
+    // command FIFO read (FWFT)
+    // ----------------------------
+    always_comb {
+        // defalt
+        CMDFIFO_RDEN = 1'b0;
+
+        // read a word when we are in a command-collection state and FIFO not empty,
+        // and not currently drawing
+        if (state == State::fetch) || (state == State::setframe2) || (state == State::setframe3) || (state == State::setarea2) || (state == State::setarea3) || (state == State::setcolor2) || (state == State::patblt2) || (state == State::patblt3) {
+            if !CMDFIFO_EMPTY {
+                CMDFIFO_RDEN = 1'b1;
+            }
+        }
+    }
+    let cmd_fire: logic = CMDFIFO_RDEN & ~CMDFIFO_EMPTY;
+
+    // ----------------------------
+    // output signals (combinational from state)
+    // ----------------------------
+    always_comb {
+        // defaults
+        WADDRVLD = 1'b0;
+        WADDR    = 32'h0;
+        WDATAVLD = 1'b0;
+        WDATA    = 32'h0;
+        WSTRB    = 4'h0;
+        WLAST    = 1'b0;
+
+        if state == State::draw {
+            // data beat always valid while drawing
+            WDATAVLD = 1'b1;
+            WDATA    = reg_fcolor;
+            WSTRB    = 4'hF;
+
+            // at the first beat of each burst, present start address
+            if burst_idx == 5'd0 {
+                WADDRVLD = 1'b1;
+                WADDR    = addr_reg;
+            }
+
+            // last beat in this burst
+            if burst_idx == (burst_len - 5'd1) {
+                WLAST = 1'b1;
+            }
+        }
+    }
+}
