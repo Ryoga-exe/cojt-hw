@@ -283,10 +283,17 @@ pub module drw_proc (
                 // - word2: DPOSX[23:12] (signed12), DPOSY[11:0] (signed12)
                 // - word3: DSIZX[22:12] (u11),      DSIZY[10:0] (u11)
                 State::patblt2: {
-                    // TODO: implement
+                    if cmd_fire {
+                        pat_dposx = $signed(CMDFIFO_RDATA[23:12]);
+                        pat_dposy = $signed(CMDFIFO_RDATA[11:0]);
+                        state     = State::patblt3;
+                    }
                 }
                 State::patblt3: {
                     // TODO: implement
+                    if cmd_fire {
+                        // capture size directly from the word we just poped
+                    }
                 }
                 // DRAW: stream pixels to vramctrl
                 State::draw: {
