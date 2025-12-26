@@ -138,18 +138,18 @@ pub module drw_vramctrl (
     var descL_valid: logic   ;
     var descL_count: logic<8>;
     inst u_fifo_descL: $sv::fifo_8in8out_256depth (
-        clk        : CLK        ,
-        din        : descL_din  ,
-        rd_en      : descL_rd_en,
-        rst        : rst        ,
-        wr_en      : descL_wr_en,
-        dout       : descL_dout ,
-        empty      : descL_empty,
-        full       : descL_full ,
-        overflow   : _          ,
-        valid      : descL_valid,
-        underflow  : _          ,
-        data_countL: descL_count,
+        clk       : CLK        ,
+        din       : descL_din  ,
+        rd_en     : descL_rd_en,
+        rst       : rst        ,
+        wr_en     : descL_wr_en,
+        dout      : descL_dout ,
+        empty     : descL_empty,
+        full      : descL_full ,
+        overflow  : _          ,
+        valid     : descL_valid,
+        underflow : _          ,
+        data_count: descL_count,
     );
 
     // ---------------------------------------------------------------------
