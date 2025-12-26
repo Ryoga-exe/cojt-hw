@@ -19,6 +19,9 @@ pub module drw_vramctrl (
     SDATAVLD: output logic    ,
     SDATA   : output logic<32>,
 
+    // status
+    BUSY: output logic,
+
     // AXI read address channel
     ARADDR : output logic<32>,
     ARLEN  : output logic<4> ,
@@ -257,5 +260,44 @@ pub module drw_vramctrl (
                 default       : {}
             }
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // outputs
+    // ---------------------------------------------------------------------
+
+    // read path: unused
+    always_comb {
+        ARADDR   = 32'h0;
+        ARLEN    = 4'h0;
+        ARVALID  = 1'b0;
+        RREADY   = 1'b0;
+        SDATAVLD = 1'b0;
+        SDATA    = 32'h0;
+    }
+
+    // write address channel
+    always_comb {
+        AWADDR  = awaddr_reg;
+        AWLEN   = awlen_reg;
+        AWVALID = (out_st == OutState::aw);
+    }
+
+    // write data channel
+    always_comb {
+        WDATA  = wdata_dout;
+        WSTRB  = wmeta_dout[3:0];
+        WLAST  = (out_st == OutState::w) && (wrem_reg == 5'd1);
+        WVALID = (out_st == OutState::w) && (!wdata_empty) && (!wmeta_empty);
+    }
+
+    // write response channel
+    always_comb {
+        BREADY = (out_st == OutState::b);
+    }
+
+    // busy
+    always_comb {
+        BUSY = (out_st != OutState::idle) || in_burst_active || (!descA_empty) || (!wdata_empty) || (!wmeta_empty);
     }
 }
