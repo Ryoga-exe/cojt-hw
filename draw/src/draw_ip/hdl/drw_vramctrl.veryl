@@ -1,0 +1,261 @@
+/// VRAM controller (AXI master)
+pub module drw_vramctrl (
+    CLK  : input clock           ,
+    ARST : input reset           ,
+    RSTS : input reset           ,
+    START: input logic           ,
+    RESOL: input Resolution::Mode,
+
+    // write stream from proc
+    IN_WREADY: output logic    ,
+    WADDRVLD : input  logic    ,
+    WADDR    : input  logic<32>,
+    WDATAVLD : input  logic    ,
+    WDATA_IN : input  logic<32>,
+    WSTRB_IN : input  logic<4> ,
+    WLAST_IN : input  logic    ,
+
+    // read stream to proc
+    SDATAVLD: output logic    ,
+    SDATA   : output logic<32>,
+
+    // AXI read address channel
+    ARADDR : output logic<32>,
+    ARLEN  : output logic<4> ,
+    ARVALID: output logic    ,
+    ARREADY: input  logic    ,
+
+    // AXI read data channel
+    RDATA : input  logic<32>,
+    RLAST : input  logic    ,
+    RVALID: input  logic    ,
+    RREADY: output logic    ,
+
+    // write address channel
+    AWADDR : output logic<32>,
+    AWLEN  : output logic<4> ,
+    AWVALID: output logic    ,
+    AWREADY: input  logic    ,
+
+    // write data channel
+    WDATA : output logic<32>,
+    WSTRB : output logic<4> ,
+    WLAST : output logic    ,
+    WVALID: output logic    ,
+    WREADY: input  logic    ,
+
+    // write response channel
+    BRESP : input  logic<2>,
+    BVALID: input  logic   ,
+    BREADY: output logic   ,
+) {
+    // Reset definition (Combined ARST and RSTS)
+    let rst: '_ default reset_sync_high = ARST | RSTS;
+
+    // ---------------------------------------------------------------------
+    // FIFOs
+    // ---------------------------------------------------------------------
+
+    // wdata: 32bit
+    var wdata_wr_en: logic    ;
+    var wdata_rd_en: logic    ;
+    var wdata_dout : logic<32>;
+    var wdata_empty: logic    ;
+    var wdata_full : logic    ;
+    var wdata_valid: logic    ;
+    var wdata_count: logic<12>;
+    inst u_fifo_wdata: $sv::fifo_32in32out_2048depth (
+        clk       : CLK        ,
+        din       : WDATA_IN   ,
+        rd_en     : wdata_rd_en,
+        rst       : rst        ,
+        wr_en     : wdata_wr_en,
+        dout      : wdata_dout ,
+        empty     : wdata_empty,
+        full      : wdata_full ,
+        overflow  : _          ,
+        valid     : wdata_valid,
+        underflow : _          ,
+        data_count: wdata_count,
+    );
+
+    // wmeta: 8bit = {WLAST, WSTRB}
+    var wmeta_wr_en: logic    ;
+    var wmeta_rd_en: logic    ;
+    var wmeta_dout : logic<8> ;
+    var wmeta_empty: logic    ;
+    var wmeta_full : logic    ;
+    var wmeta_valid: logic    ;
+    var wmeta_count: logic<12>;
+    inst u_fifo_wmeta: $sv::fifo_8in8out_2048depth (
+        clk       : CLK                         ,
+        din       : {3'b000, WLAST_IN, WSTRB_IN}, // [4]=WLAST, [3:0]=WSTRB
+        rd_en     : wmeta_rd_en                 ,
+        rst       : rst                         ,
+        wr_en     : wmeta_wr_en                 ,
+        dout      : wmeta_dout                  ,
+        empty     : wmeta_empty                 ,
+        full      : wmeta_full                  ,
+        overflow  : _                           ,
+        valid     : wmeta_valid                 ,
+        underflow : _                           ,
+        data_count: wmeta_count                 ,
+    );
+
+    // descriptor: addr(32) + awlen(8: [3:0]=AWLEN)
+    var descA_wr_en: logic    ;
+    var descA_rd_en: logic    ;
+    var descA_din  : logic<32>;
+    var descA_dout : logic<32>;
+    var descA_empty: logic    ;
+    var descA_full : logic    ;
+    var descA_valid: logic    ;
+    var descA_count: logic<8> ;
+    inst u_fifo_descA: $sv::fifo_32in32out_256depth (
+        clk       : CLK        ,
+        din       : descA_din  ,
+        rd_en     : descA_rd_en,
+        rst       : rst        ,
+        wr_en     : descA_wr_en,
+        dout      : descA_dout ,
+        empty     : descA_empty,
+        full      : descA_full ,
+        overflow  : _          ,
+        valid     : descA_valid,
+        underflow : _          ,
+        data_count: descA_count,
+    );
+
+    var descL_wr_en: logic   ;
+    var descL_rd_en: logic   ;
+    var descL_din  : logic<8>;
+    var descL_dout : logic<8>;
+    var descL_empty: logic   ;
+    var descL_full : logic   ;
+    var descL_valid: logic   ;
+    var descL_count: logic<8>;
+    inst u_fifo_descL: $sv::fifo_8in8out_256depth (
+        clk        : CLK        ,
+        din        : descL_din  ,
+        rd_en      : descL_rd_en,
+        rst        : rst        ,
+        wr_en      : descL_wr_en,
+        dout       : descL_dout ,
+        empty      : descL_empty,
+        full       : descL_full ,
+        overflow   : _          ,
+        valid      : descL_valid,
+        underflow  : _          ,
+        data_countL: descL_count,
+    );
+
+    // ---------------------------------------------------------------------
+    // input side: accept write beats
+    // ---------------------------------------------------------------------
+    var in_burst_active: logic    ;
+    var in_addr_reg    : logic<32>;
+    var in_len_m1_reg  : logic<4> ; // beats-1 (0..15)
+
+    // ready: FIFO に空きがあり、かつ（バースト中 もしくは 先頭 WADDRVLD）
+    always_comb {
+        IN_WREADY = (!wdata_full) && (!wmeta_full) && (!descA_full) && (!descL_full) && (in_burst_active || WADDRVLD);
+    }
+
+    let accept_beat: logic = WDATAVLD && IN_WREADY;
+
+    // wdata/wmeta write
+    always_comb {
+        wdata_wr_en = accept_beat;
+        wmeta_wr_en = accept_beat;
+    }
+
+    // descriptor enqueue data
+    let addr_for_desc  : logic<32> = if !in_burst_active ? WADDR : in_addr_reg;
+    let len_m1_for_desc: logic<4>  = if !in_burst_active ? 4'd0 : (in_len_m1_reg + 4'd1);
+
+    // descriptor enqueue when last beat accepted
+    always_comb {
+        descA_wr_en = accept_beat && WLAST_IN;
+        descL_wr_en = accept_beat && WLAST_IN;
+        descA_din   = addr_for_desc;
+        descL_din   = {4'b0000, len_m1_for_desc};
+    }
+
+    // track burst state
+    always_ff {
+        if_reset {
+            in_burst_active = 1'b0;
+            in_addr_reg     = 32'h0;
+            in_len_m1_reg   = 4'h0;
+        } else {
+            if START {
+                // START で受信途中状態だけリセット（FIFO内容は保持）
+                in_burst_active = 1'b0;
+                in_len_m1_reg   = 4'h0;
+            }
+
+            if accept_beat {
+                if !in_burst_active {
+                    in_burst_active = 1'b1;
+                    in_addr_reg     = WADDR;
+                    in_len_m1_reg   = 4'h0;
+                } else {
+                    in_len_m1_reg += 4'h1;
+                }
+
+                if WLAST_IN {
+                    in_burst_active = 1'b0;
+                    in_len_m1_reg   = 4'h0;
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // output side: issue AXI writes
+    // ---------------------------------------------------------------------
+    enum OutState {
+        idle,
+        aw,
+        w,
+        b,
+    }
+    var out_st: OutState;
+
+    var awaddr_reg: logic<32>;
+    var awlen_reg : logic<4> ;
+    var wrem_reg  : logic<5> ; // remaining beats (1..16)
+
+    let start_burst: logic = (out_st == OutState::idle) && (!descA_empty) && (!descL_empty);
+
+    // descriptor dequeue (FWFT想定)
+    always_comb {
+        descA_rd_en = start_burst;
+        descL_rd_en = start_burst;
+    }
+
+    // W channel fire
+    let w_fire: logic = (out_st == OutState::w) && (!wdata_empty) && (!wmeta_empty) && WREADY;
+
+    always_comb {
+        wdata_rd_en = w_fire;
+        wmeta_rd_en = w_fire;
+    }
+
+    always_ff {
+        if_reset {
+            out_st     = OutState::idle;
+            awaddr_reg = 32'h0;
+            awlen_reg  = 4'h0;
+            wrem_reg   = 5'd0;
+        } else {
+            case out_st {
+                OutState::idle: {}
+                OutState::aw  : {}
+                OutState::w   : {}
+                OutState::b   : {}
+                default       : {}
+            }
+        }
+    }
+}
