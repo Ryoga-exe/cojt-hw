@@ -36,4 +36,64 @@ pub module drw_proc (
     INT : output logic,
 ) {
     let rst: '_ default reset_sync_high = ARST | RSTS;
+
+    var cmd_rd_en   : logic;
+    var cmd_rd_en_d1: logic;
+    always_ff {
+        if_reset {
+            cmd_rd_en_d1 = 1'b0;
+        } else {
+            cmd_rd_en_d1 = cmd_rd_en;
+        }
+    }
+    let cmd_valid: logic = cmd_rd_en_d1;
+    
+    const BURST_MAX: u32 = 16;
+
+    enum State {
+        idle,
+        fetch,
+        setframe2,
+        setframe3,
+        setarea2,
+        setarea3,
+        setcolor2,
+        patblt2,
+        patblt3,
+        draw,
+        eodl_done,
+    }
+    var state: State;
+
+    var reg_frame_base: logic<32>;
+    var reg_frame_w: logic<11>;
+    var reg_frame_h: logic<11>;
+
+    var reg_area_posx: logic<11>;
+    var reg_area_posy: logic<11>;
+    var reg_area_sizx: logic<11>;
+    var reg_area_sizy: logic<11>;
+
+    var reg_fcolor: logic<32>; // ARGB8888
+
+    // PATBLT params
+    var pat_dposx: signed logic<12>;
+    var pat_dposy: signed logic<12>;
+
+    // draw (clipped) region [x0, x1), [y0, y1)
+    var draw_x0: logic<12>;
+    var draw_x1: logic<12>;
+    var draw_y0: logic<12>;
+    var draw_y1: logic<12>;
+
+    // iterators
+    var cur_x: logic<12>;
+    var cur_y: logic<12>;
+
+    // current pixel address (bytes)
+    var addr_reg: logic<32>;
+
+    // burst control
+    var burst_len: logic<5>; // 1..16
+    var burst_idx: logic<5>; // 0..15
 }
