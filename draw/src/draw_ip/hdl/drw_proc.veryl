@@ -47,7 +47,7 @@ pub module drw_proc (
         }
     }
     let cmd_valid: logic = cmd_rd_en_d1;
-    
+
     const BURST_MAX: u32 = 16;
 
     enum State {
@@ -66,8 +66,8 @@ pub module drw_proc (
     var state: State;
 
     var reg_frame_base: logic<32>;
-    var reg_frame_w: logic<11>;
-    var reg_frame_h: logic<11>;
+    var reg_frame_w   : logic<11>;
+    var reg_frame_h   : logic<11>;
 
     var reg_area_posx: logic<11>;
     var reg_area_posy: logic<11>;
@@ -96,4 +96,20 @@ pub module drw_proc (
     // burst control
     var burst_len: logic<5>; // 1..16
     var burst_idx: logic<5>; // 0..15
+
+    // ----------------------------
+    // command FIFO read (FWFT)
+    // ----------------------------
+    always_comb {
+        cmd_rd_en = 1'b0;
+
+        if !CMDFIFO_EMPTY {
+            if ((state == State::fetch) || (state == State::setframe2) || (state == State::setframe3) || (state == State::setarea2) || (state == State::setarea3) || (state == State::setcolor2) || (state == State::patblt2) || (state == State::patblt3 && !cmd_valid)) {
+                cmd_rd_en = 1'b1;
+            }
+        }
+    }
+    assign CMDFIFO_RDEN = cmd_rd_en;
+    let cmd_fire    : logic = CMDFIFO_RDEN & ~CMDFIFO_EMPTY;
+
 }
