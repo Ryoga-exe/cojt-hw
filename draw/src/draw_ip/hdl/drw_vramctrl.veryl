@@ -142,10 +142,34 @@ pub module drw_vramctrl (
             } else {
                 case state {
                     State::capture: {
-                        // TODO: impl
+                        if accept {
+                            if cap_cnt == 5'd0 {
+                                cap_addr = WADDR;
+                            }
+                            buf_data[cap_cnt] = WDATA_IN;
+                            buf_strb[cap_cnt] = WSTRB_IN;
+
+                            if WLAST_IN {
+                                // finalize captured burst
+                                rem_len = cap_cnt + 5'd1;
+                                rem_ofs = 5'd0;
+                                cap_cnt = 5'd0;
+                                state   = State::aw;
+                            } else {
+                                cap_cnt += 5'd1;
+                            }
+                        }
                     }
                     State::aw: {
-                        // TODO: impl
+                        if rem_len == 5'd0 {
+                            state = State::capture;
+                        } else if AWREADY {
+                            // AWVALID=1 in this state
+                            cur_addr_reg = aw_addr_comb;
+                            cur_len_reg  = cur_len_comb;
+                            send_idx     = 5'd0;
+                            state        = State::w;
+                        }
                     }
                     State::w: {
                         // TODO: imp;
