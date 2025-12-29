@@ -16,9 +16,9 @@ update_compile_order -fileset sources_1
 
 # --- Add FIFO ------------------------------------------
 import_ip target/draw_ip/src/fifo_32in32out_2048depth/fifo_32in32out_2048depth.xci
-import_ip target/draw_ip/src/fifo_32in32out_2048depth/fifo_32in32out_256depth.xci
+import_ip target/draw_ip/src/fifo_32in32out_256depth/fifo_32in32out_256depth.xci
 import_ip target/draw_ip/src/fifo_32in32out_2048depth/fifo_8in8out_2048depth.xci
-import_ip target/draw_ip/src/fifo_32in32out_2048depth/fifo_8in8out_256depth.xci
+import_ip target/draw_ip/src/fifo_32in32out_256depth/fifo_8in8out_256depth.xci
 update_ip_catalog
 
 # --- Run Block Design script ---------------------------
