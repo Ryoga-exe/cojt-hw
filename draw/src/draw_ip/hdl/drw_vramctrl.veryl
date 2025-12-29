@@ -1,4 +1,6 @@
 /// VRAM controller (AXI master)
+/// Convert the write stream (WADDRVLD/WADDR + WDATAVLD/WDATA/WSTRB/WLAST)
+/// coming from drw_proc to AXI Write (AW/W/B) and write to DDR (VRAM).
 pub module drw_vramctrl (
     CLK  : input clock           ,
     ARST : input reset           ,
@@ -55,275 +57,144 @@ pub module drw_vramctrl (
     // Reset definition (Combined ARST and RSTS)
     let rst: '_ default reset_sync_high = ARST | RSTS;
 
-    // ---------------------------------------------------------------------
-    // FIFOs
-    // ---------------------------------------------------------------------
+    const BURST_MAX: u32 = 16;
 
-    // wdata: 32bit
-    var wdata_wr_en: logic    ;
-    var wdata_rd_en: logic    ;
-    var wdata_dout : logic<32>;
-    var wdata_empty: logic    ;
-    var wdata_full : logic    ;
-    var wdata_valid: logic    ;
-    var wdata_count: logic<12>;
-    inst u_fifo_wdata: $sv::fifo_32in32out_2048depth (
-        clk       : CLK        ,
-        din       : WDATA_IN   ,
-        rd_en     : wdata_rd_en,
-        rst       : rst        ,
-        wr_en     : wdata_wr_en,
-        dout      : wdata_dout ,
-        empty     : wdata_empty,
-        full      : wdata_full ,
-        overflow  : _          ,
-        valid     : wdata_valid,
-        underflow : _          ,
-        data_count: wdata_count,
-    );
+    var buf_data: logic<32> [BURST_MAX];
+    var buf_strb: logic<4>  [BURST_MAX];
 
-    // wmeta: 8bit = {WLAST, WSTRB}
-    var wmeta_wr_en: logic    ;
-    var wmeta_rd_en: logic    ;
-    var wmeta_dout : logic<8> ;
-    var wmeta_empty: logic    ;
-    var wmeta_full : logic    ;
-    var wmeta_valid: logic    ;
-    var wmeta_count: logic<12>;
-    inst u_fifo_wmeta: $sv::fifo_8in8out_2048depth (
-        clk       : CLK                         ,
-        din       : {3'b000, WLAST_IN, WSTRB_IN}, // [4]=WLAST, [3:0]=WSTRB
-        rd_en     : wmeta_rd_en                 ,
-        rst       : rst                         ,
-        wr_en     : wmeta_wr_en                 ,
-        dout      : wmeta_dout                  ,
-        empty     : wmeta_empty                 ,
-        full      : wmeta_full                  ,
-        overflow  : _                           ,
-        valid     : wmeta_valid                 ,
-        underflow : _                           ,
-        data_count: wmeta_count                 ,
-    );
+    var cap_addr: logic<32>;
+    var cap_cnt : logic<5> ; // captured beats so far (0..16)
 
-    // descriptor: addr(32) + awlen(8: [3:0]=AWLEN)
-    var descA_wr_en: logic    ;
-    var descA_rd_en: logic    ;
-    var descA_din  : logic<32>;
-    var descA_dout : logic<32>;
-    var descA_empty: logic    ;
-    var descA_full : logic    ;
-    var descA_valid: logic    ;
-    var descA_count: logic<8> ;
-    inst u_fifo_descA: $sv::fifo_32in32out_256depth (
-        clk       : CLK        ,
-        din       : descA_din  ,
-        rd_en     : descA_rd_en,
-        rst       : rst        ,
-        wr_en     : descA_wr_en,
-        dout      : descA_dout ,
-        empty     : descA_empty,
-        full      : descA_full ,
-        overflow  : _          ,
-        valid     : descA_valid,
-        underflow : _          ,
-        data_count: descA_count,
-    );
+    // pending burst sending control
+    var rem_len: logic<5>; // remaining beats to send (0..16)
+    var rem_ofs: logic<5>; // offset in buffer (0..16)
 
-    var descL_wr_en: logic   ;
-    var descL_rd_en: logic   ;
-    var descL_din  : logic<8>;
-    var descL_dout : logic<8>;
-    var descL_empty: logic   ;
-    var descL_full : logic   ;
-    var descL_valid: logic   ;
-    var descL_count: logic<8>;
-    inst u_fifo_descL: $sv::fifo_8in8out_256depth (
-        clk       : CLK        ,
-        din       : descL_din  ,
-        rd_en     : descL_rd_en,
-        rst       : rst        ,
-        wr_en     : descL_wr_en,
-        dout      : descL_dout ,
-        empty     : descL_empty,
-        full      : descL_full ,
-        overflow  : _          ,
-        valid     : descL_valid,
-        underflow : _          ,
-        data_count: descL_count,
-    );
+    // current sub-burst (split by 4KB boundary)
+    var cur_addr_reg: logic<32>;
+    var cur_len_reg : logic<5> ; // 1..16
+    var send_idx    : logic<5> ;
 
-    // ---------------------------------------------------------------------
-    // input side: accept write beats
-    // ---------------------------------------------------------------------
-    var in_burst_active: logic    ;
-    var in_addr_reg    : logic<32>;
-    var in_len_m1_reg  : logic<4> ; // beats-1 (0..15)
-
-    // ready: FIFO に空きがあり、かつ（バースト中 もしくは 先頭 WADDRVLD）
-    always_comb {
-        IN_WREADY = (!wdata_full) && (!wmeta_full) && (!descA_full) && (!descL_full) && (in_burst_active || WADDRVLD);
-    }
-
-    let accept_beat: logic = WDATAVLD && IN_WREADY;
-
-    // wdata/wmeta write
-    always_comb {
-        wdata_wr_en = accept_beat;
-        wmeta_wr_en = accept_beat;
-    }
-
-    // descriptor enqueue data
-    let addr_for_desc  : logic<32> = if !in_burst_active ? WADDR : in_addr_reg;
-    let len_m1_for_desc: logic<4>  = if !in_burst_active ? 4'd0 : (in_len_m1_reg + 4'd1);
-
-    // descriptor enqueue when last beat accepted
-    always_comb {
-        descA_wr_en = accept_beat && WLAST_IN;
-        descL_wr_en = accept_beat && WLAST_IN;
-        descA_din   = addr_for_desc;
-        descL_din   = {4'b0000, len_m1_for_desc};
-    }
-
-    // track burst state
-    always_ff {
-        if_reset {
-            in_burst_active = 1'b0;
-            in_addr_reg     = 32'h0;
-            in_len_m1_reg   = 4'h0;
-        } else {
-            if START {
-                // START で受信途中状態だけリセット（FIFO内容は保持）
-                in_burst_active = 1'b0;
-                in_len_m1_reg   = 4'h0;
-            }
-
-            if accept_beat {
-                if !in_burst_active {
-                    in_burst_active = 1'b1;
-                    in_addr_reg     = WADDR;
-                    in_len_m1_reg   = 4'h0;
-                } else {
-                    in_len_m1_reg += 4'h1;
-                }
-
-                if WLAST_IN {
-                    in_burst_active = 1'b0;
-                    in_len_m1_reg   = 4'h0;
-                }
-            }
-        }
-    }
-
-    // ---------------------------------------------------------------------
-    // output side: issue AXI writes
-    // ---------------------------------------------------------------------
-    enum OutState {
-        idle,
+    enum State {
+        capture,
         aw,
         w,
         b,
     }
-    var out_st: OutState;
+    var state: State;
 
-    var awaddr_reg: logic<32>;
-    var awlen_reg : logic<4> ;
-    var wrem_reg  : logic<5> ; // remaining beats (1..16)
-
-    let start_burst: logic = (out_st == OutState::idle) && (!descA_empty) && (!descL_empty);
-
-    // descriptor dequeue (FWFT想定)
-    always_comb {
-        descA_rd_en = start_burst;
-        descL_rd_en = start_burst;
-    }
-
-    // W channel fire
-    let w_fire: logic = (out_st == OutState::w) && (!wdata_empty) && (!wmeta_empty) && WREADY;
+    // ---------------------------------------------------------------------
+    // 4KB boundary split: compute current sub-burst length
+    // ---------------------------------------------------------------------
+    var aw_addr_comb: logic<32>;
+    var cur_len_comb: logic<5> ;
+    var bytes_left  : logic<13>;
+    var maxbeats    : logic<11>;
 
     always_comb {
-        wdata_rd_en = w_fire;
-        wmeta_rd_en = w_fire;
+        aw_addr_comb = cap_addr + (rem_ofs << 2);
+
+        // beats before crossing 4KB: (4096 - (addr[11:0])) / 4
+
+        bytes_left = 13'd4096 - {1'b0, aw_addr_comb[11:0]};
+        maxbeats   = bytes_left[12:2]; // /4
+        if maxbeats == 11'd0 {
+            maxbeats = 11'd1;
+        }
+
+        if maxbeats >= {6'd0, rem_len} {
+            cur_len_comb = rem_len;
+        } else {
+            // rem_len<=16 なのでここに来る maxbeats は <16 のはず
+            cur_len_comb = maxbeats[4:0];
+        }
+
+        if rem_len != 5'd0 && cur_len_comb == 5'd0 {
+            cur_len_comb = 5'd1;
+        }
     }
 
+    // ---------------------------------------------------------------------
+    // Input handshake (proc -> vramctrl)
+    // ---------------------------------------------------------------------
+    assign IN_WREADY = (state == State::capture) && (rem_len == 5'd0) && (cap_cnt <: BURST_MAX);
+    let accept   : logic = IN_WREADY && WDATAVLD && ((cap_cnt != 5'd0) || WADDRVLD);
+
+    // ---------------------------------------------------------------------
+    // Single FSM: capture 1 burst -> emit (maybe split) AW/W/B -> repeat
+    // ---------------------------------------------------------------------
     always_ff {
         if_reset {
-            out_st     = OutState::idle;
-            awaddr_reg = 32'h0;
-            awlen_reg  = 4'h0;
-            wrem_reg   = 5'd0;
+            state        = State::capture;
+            cap_addr     = 32'h0;
+            cap_cnt      = 5'd0;
+            rem_len      = 5'd0;
+            rem_ofs      = 5'd0;
+            cur_addr_reg = 32'h0;
+            cur_len_reg  = 5'd0;
+            send_idx     = 5'd0;
         } else {
-            case out_st {
-                OutState::idle: {
-                    if start_burst {
-                        awaddr_reg = descA_dout;
-                        awlen_reg  = descL_dout[3:0];
-                        wrem_reg   = {1'b0, descL_dout[3:0]} + 5'd1;
-                        out_st     = OutState::aw;
+            if START {
+                state    = State::capture;
+                cap_cnt  = 5'd0;
+                rem_len  = 5'd0;
+                rem_ofs  = 5'd0;
+                send_idx = 5'd0;
+            } else {
+                case state {
+                    State::capture: {
+                        // TODO: impl
                     }
-                }
-                OutState::aw: {
-                    if AWREADY {
-                        out_st = OutState::w;
+                    State::aw: {
+                        // TODO: impl
                     }
-                }
-                OutState::w: {
-                    if w_fire {
-                        if wrem_reg == 5'd1 {
-                            out_st   = OutState::b;
-                            wrem_reg = 5'd0;
-                        } else {
-                            wrem_reg -= 5'd1;
-                        }
+                    State::w: {
+                        // TODO: imp;
                     }
-                }
-                OutState::b: {
-                    if BVALID {
-                        out_st = OutState::idle;
+                    State::b: {
+                        // TODO: impl
                     }
-                }
-                default: {
-                    out_st = OutState::idle;
+                    default: {
+                        state = State::capture;
+                    }
                 }
             }
         }
     }
 
     // ---------------------------------------------------------------------
-    // outputs
+    // Outputs
     // ---------------------------------------------------------------------
-
-    // read path: unused
     always_comb {
         ARADDR   = 32'h0;
-        ARLEN    = 4'h0;
+        ARLEN    = 8'h0;
         ARVALID  = 1'b0;
         RREADY   = 1'b0;
         SDATAVLD = 1'b0;
         SDATA    = 32'h0;
     }
 
-    // write address channel
+    // AW channel
     always_comb {
-        AWADDR  = awaddr_reg;
-        AWLEN   = awlen_reg;
-        AWVALID = (out_st == OutState::aw);
+        AWADDR  = aw_addr_comb;
+        AWLEN   = if (cur_len_comb == 5'd0) ? 8'd0 : {3'b000, (cur_len_comb - 5'd1)};
+        AWVALID = (state == State::aw) && (rem_len != 5'd0);
     }
 
-    // write data channel
+    // W channel
     always_comb {
-        WDATA  = wdata_dout;
-        WSTRB  = wmeta_dout[3:0];
-        WLAST  = (out_st == OutState::w) && (wrem_reg == 5'd1);
-        WVALID = (out_st == OutState::w) && (!wdata_empty) && (!wmeta_empty);
+        WVALID = (state == State::w);
+        WDATA  = buf_data[rem_ofs + send_idx];
+        WSTRB  = buf_strb[rem_ofs + send_idx];
+        WLAST  = (state == State::w) && (send_idx == (cur_len_reg - 5'd1));
     }
 
-    // write response channel
+    // B channel
     always_comb {
-        BREADY = (out_st == OutState::b);
+        BREADY = 1'b1; // TODO: STEP-2
     }
 
-    // busy
+    // BUSY: sending or capturing partial burst
     always_comb {
-        BUSY = (out_st != OutState::idle) || in_burst_active || (!descA_empty) || (!wdata_empty) || (!wmeta_empty);
+        BUSY = (state != State::capture) || (rem_len != 5'd0) || (cap_cnt != 5'd0);
     }
 }
