@@ -1,0 +1,9 @@
+package DrawOpcode {
+    const NOP        : logic<8> = 8'h00;
+    const EODL       : logic<8> = 8'h0F;
+    const SETFRAME   : logic<8> = 8'h20;
+    const SETDRAWAREA: logic<8> = 8'h21;
+    const SETFCOLOR  : logic<8> = 8'h23;
+    const SETBLENDOFF: logic<8> = 8'h32;
+    const PATBLT     : logic<8> = 8'h81;
+}
