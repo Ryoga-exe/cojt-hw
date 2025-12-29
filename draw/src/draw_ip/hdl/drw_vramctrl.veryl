@@ -172,10 +172,26 @@ pub module drw_vramctrl (
                         }
                     }
                     State::w: {
-                        // TODO: imp;
+                        if WREADY {
+                            if send_idx == (cur_len_reg - 5'd1) {
+                                state = State::b;
+                            } else {
+                                send_idx += 5'd1;
+                            }
+                        }
                     }
                     State::b: {
-                        // TODO: impl
+                        if BVALID {
+                            if rem_len <= cur_len_reg {
+                                rem_len = 5'd0;
+                                rem_ofs = 5'd0;
+                                state   = State::capture;
+                            } else {
+                                rem_len -= cur_len_reg;
+                                rem_ofs += cur_len_reg;
+                                state   =  State::aw;
+                            }
+                        }
                     }
                     default: {
                         state = State::capture;
