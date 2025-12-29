@@ -104,7 +104,7 @@ pub module drw_proc (
         cmd_rd_en = 1'b0;
 
         if !CMDFIFO_EMPTY {
-            if ((state == State::fetch) || (state == State::setframe2) || (state == State::setframe3) || (state == State::setarea2) || (state == State::setarea3) || (state == State::setcolor2) || (state == State::patblt2) || (state == State::patblt3 && !cmd_valid)) {
+            if (state == State::fetch) || (state == State::setframe2) || (state == State::setframe3) || (state == State::setarea2) || (state == State::setarea3) || (state == State::setcolor2) || (state == State::patblt2) || (state == State::patblt3 && !cmd_valid) {
                 cmd_rd_en = 1'b1;
             }
         }
@@ -112,4 +112,162 @@ pub module drw_proc (
     assign CMDFIFO_RDEN = cmd_rd_en;
     let cmd_fire    : logic = CMDFIFO_RDEN & ~CMDFIFO_EMPTY;
 
+    // ----------------------------
+    // output signals (combinational from state)
+    // ----------------------------
+    always_comb {
+        // defaults
+        WADDRVLD = 1'b0;
+        WADDR    = 32'h0;
+        WDATAVLD = 1'b0;
+        WDATA    = 32'h0;
+        WSTRB    = 4'h0;
+        WLAST    = 1'b0;
+
+        if state == State::draw {
+            // data beat always valid while drawing
+            WDATAVLD = 1'b1;
+            WDATA    = reg_fcolor;
+            WSTRB    = 4'hF;
+
+            // at the first beat of each burst, present start address
+            if burst_idx == 5'd0 {
+                WADDRVLD = 1'b1;
+                WADDR    = addr_reg;
+            }
+
+            // last beat in this burst
+            if burst_idx == (burst_len - 5'd1) {
+                WLAST = 1'b1;
+            }
+        }
+    }
+
+    // ----------------------------
+    // BUSY
+    // ----------------------------
+    assign BUSY = (state != State::idle);
+
+    // ----------------------------
+    // main FSM (+ INT pulse)
+    // ----------------------------
+    always_ff {
+        if_reset {
+            state = State::idle;
+
+            reg_frame_base = 32'h0;
+            reg_frame_w    = 11'd0;
+            reg_frame_h    = 11'd0;
+
+            reg_area_posx = '0;
+            reg_area_posy = '0;
+            reg_area_sizx = 11'd0;
+            reg_area_sizy = 11'd0;
+
+            reg_fcolor = 32'h00000000;
+
+            pat_dposx = '0;
+            pat_dposy = '0;
+
+            draw_x0 = 12'd0;
+            draw_x1 = 12'd0;
+            draw_y0 = 12'd0;
+            draw_y1 = 12'd0;
+            cur_x   = 12'd0;
+            cur_y   = 12'd0;
+
+            addr_reg  = 32'd0;
+            burst_len = 5'd1;
+            burst_idx = 5'd0;
+
+            INT = 1'b0;
+        } else {
+            // default: INT pulse is 1-cycle
+            INT = 1'b0;
+
+            // START: begin new list
+            if START {
+                state = State::fetch;
+
+                // reset any in-flight draw
+                draw_x0 = 12'd0;
+                draw_x1 = 12'd0;
+                draw_y0 = 12'd0;
+                draw_y1 = 12'd0;
+                cur_x   = 12'd0;
+                cur_y   = 12'd0;
+
+                addr_reg  = 32'd0;
+                burst_len = 5'd1;
+                burst_idx = 5'd0;
+            }
+
+            case state {
+                State::idle: {
+                    // wait for START
+                }
+                // ------------------------
+                // fetch opcode word
+                // ------------------------
+                State::fetch: {
+                    // TODO: impl
+                }
+                // ------------------------
+                // SETFRAME (3 words)
+                //   word2: VRAMADR
+                //   word3: WIDTH[26:16] HEIGHT[10:0]
+                // ------------------------
+                State::setframe2: {
+                    // TODO: impl
+                }
+                State::setframe3: {
+                    // TODO: impl
+                }
+                // ------------------------
+                // SETDRAWAREA (3 words)
+                //   word2: POSX[26:16] (u11) POSY[10:0] (u11)
+                //   word3: SIZX[26:16] (u11)      SIZY[10:0] (u11)
+                // ------------------------
+                State::setarea2: {
+                    // TODO: impl
+                }
+                State::setarea3: {
+                    // TODO: impl
+                }
+                // ------------------------
+                // SETFCOLOR (2 words)
+                //   word2: A[31:24] R[23:16] G[15:8] B[7:0]
+                // ------------------------
+                State::setcolor2: {
+                    // TODO: impl
+                }
+                // ------------------------
+                // PATBLT (3 words)
+                //   word2: DPOSX[27:16] (signed12), DPOSY[11:0] (signed12)
+                //   word3: DSIZX[26:16] (u11),      DSIZY[10:0] (u11)
+                // ------------------------
+                State::patblt2: {
+                    // TODO: impl
+                }
+                State::patblt3: {
+                    // TODO: impl
+                }
+                // ------------------------
+                // DRAW: stream pixels to vramctrl
+                // ------------------------
+                State::draw: {
+                    // TODO: impl
+                }
+                // ------------------------
+                // EODL
+                // ------------------------
+                State::eodl_done: {
+                    // TODO: impl
+                }
+                default: {
+                    state = State::idle;
+                }
+            }
+        }
+    }
 }
