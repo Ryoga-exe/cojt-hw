@@ -37,6 +37,7 @@ pub module drw_cmdfifo (
         data_count: data_count,
     );
 
+    // widen count to 16-bit for regctrl
     assign COUNT = {4'b0, data_count};
 
 }
