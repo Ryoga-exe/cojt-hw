@@ -26,7 +26,7 @@ pub module drw_vramctrl (
 
     // AXI read address channel
     ARADDR : output logic<32>,
-    ARLEN  : output logic<4> ,
+    ARLEN  : output logic<8> ,
     ARVALID: output logic    ,
     ARREADY: input  logic    ,
 
@@ -38,7 +38,7 @@ pub module drw_vramctrl (
 
     // write address channel
     AWADDR : output logic<32>,
-    AWLEN  : output logic<4> ,
+    AWLEN  : output logic<8> ,
     AWVALID: output logic    ,
     AWREADY: input  logic    ,
 
