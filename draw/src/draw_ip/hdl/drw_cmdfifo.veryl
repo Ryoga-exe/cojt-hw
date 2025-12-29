@@ -24,7 +24,7 @@ pub module drw_cmdfifo (
 
     inst u_fifo_cmd: $sv::fifo_32in32out_2048depth (
         clk       : CLK       ,
-        din       : RDATA     ,
+        din       : WDATA     ,
         rd_en     : RDEN      ,
         rst       : rst       ,
         wr_en     : WREN      ,
