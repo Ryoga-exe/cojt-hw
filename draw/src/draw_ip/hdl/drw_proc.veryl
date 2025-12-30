@@ -245,10 +245,17 @@ pub module drw_proc (
                 //   word3: WIDTH[26:16] HEIGHT[10:0]
                 // ------------------------
                 State::setframe2: {
-                    // TODO: impl
+                    if cmd_valid {
+                        reg_frame_base = CMDFIFO_RDATA;
+                        state = State::setframe3;
+                    }
                 }
                 State::setframe3: {
-                    // TODO: impl
+                    if cmd_valid {
+                        reg_frame_w = CMDFIFO_RDATA[26:16];
+                        reg_frame_h = CMDFIFO_RDATA[10:0];
+                        state = State::fetch;
+                    }
                 }
                 // ------------------------
                 // SETDRAWAREA (3 words)
