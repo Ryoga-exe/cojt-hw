@@ -57,6 +57,107 @@ pub module drw_vramctrl (
     // Reset definition (Combined ARST and RSTS)
     let rst: '_ default reset_sync_high = ARST | RSTS;
 
+    // ---------------- input side ----------------
+    var in_addr_reg: logic<32>;
+    var in_cnt     : logic<5> ;
+    let accept     : logic     = IN_WREADY && WDATAVLD && ((in_cnt != 5'd0) || WADDRVLD);
+    let need_desc  : logic     = WDATAVLD && WLAST_IN;
+
+    always_comb {
+        IN_WREADY = !wdata_full && !wmeta_full && (!need_desc || (!descA_full && !descL_full)) && !((in_cnt == 5'd15) && WDATAVLD && !WLAST_IN);
+
+        wdata_din   = WDATA_IN;
+        wmeta_din   = {28'd0, WSTRB_IN};
+        wdata_wr_en = accept;
+        wmeta_wr_en = accept;
+
+        // 1-beat burst のとき in_addr_reg がまだ古いので WADDR を使う
+        descA_din   = if in_cnt == 5'd0 ? WADDR : in_addr_reg;
+        descL_din   = {27'd0, (in_cnt + 5'd1)}; // 1..16
+        descA_wr_en = accept && WLAST_IN;
+        descL_wr_en = accept && WLAST_IN;
+    }
+
+    always_ff {
+        if_reset {
+            in_addr_reg = 32'h0;
+            in_cnt      = 5'd0;
+        } else {
+            if accept {
+                if in_cnt == 5'd0 {
+                    in_addr_reg = WADDR;
+                }
+                if WLAST_IN {
+                    in_cnt = 5'd0;
+                } else {
+                    in_cnt += 5'd1;
+                }
+            }
+        }
+    }
+
+    // ---------------- output side ----------------
+    enum State {
+        idle,
+        desc_req,
+        desc_wait,
+        aw,
+        beat_req,
+        beat_wait,
+        w,
+        b,
+    }
+    var state: State;
+
+    var cur_addr: logic<32>;
+    var cur_rem : logic<6> ;
+
+    var sub_len_reg: logic<6>;
+    var w_left     : logic<6>;
+
+    // latched descriptor/data
+    var descA_lat: logic<32>;
+    var descL_lat: logic<32>;
+
+    var beat_data: logic<32>;
+    var beat_strb: logic<4> ;
+    var beat_v   : logic    ;
+
+    // 4KB split
+    var bytes_left  : logic<13>;
+    var maxbeats    : logic<11>;
+    var sub_len_comb: logic<6> ;
+
+    always_comb {
+        bytes_left = 13'd4096 - {1'b0, cur_addr[11:0]};
+        maxbeats   = bytes_left[12:2];
+        if maxbeats == 11'd0 {
+            maxbeats = 11'd1;
+        }
+
+        if cur_rem == 6'd0 {
+            sub_len_comb = 6'd0;
+        } else if maxbeats >= {5'd0, cur_rem} {
+            sub_len_comb = cur_rem;
+        } else {
+            sub_len_comb = {1'b0, maxbeats[4:0]};
+        }
+
+        if cur_rem != 6'd0 && sub_len_comb == 6'd0 {
+            sub_len_comb = 6'd1;
+        }
+    }
+
+    always_comb {
+        descA_rd_en = (state == State::desc_req);
+        descL_rd_en = (state == State::desc_req);
+        wdata_rd_en = (state == State::beat_req);
+        wmeta_rd_en = (state == State::beat_req);
+    }
+
+    // AW/W/B
+    let have_wfifo: logic = (!wdata_empty) && (!wmeta_empty);
+
     // ---------------- FIFO IP (32in/32out) ----------------
     var wdata_wr_en: logic    ;
     var wdata_rd_en: logic    ;
