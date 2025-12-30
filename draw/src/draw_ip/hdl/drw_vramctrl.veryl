@@ -207,20 +207,61 @@ pub module drw_vramctrl (
                     state = State::desc_wait;
                 }
                 State::desc_wait: {
-                    // TODO: impl
+                    if descA_valid {
+                        descA_lat   = descA_dout;
+                        descA_lat_v = 1'b1;
+                    }
+                    if descL_valid {
+                        descL_lat   = descL_dout;
+                        descL_lat_v = 1'b1;
+                    }
+
+                    if descA_lat_v && descL_lat_v {
+                        cur_addr = descA_lat;
+                        cur_rem  = {1'b0, descL_lat[4:0]}; // 1..16
+                        state    = State::aw;
+                    }
                 }
                 State::aw: {
-                    // TODO: impl
+                    if AWREADY && have_wfifo {
+                        sub_len_reg = sub_len_comb;
+                        w_left      = sub_len_comb;
+                        beat_v      = 1'b0;
+                        state       = State::beat_req;
+                    }
                 }
                 State::beat_req: {
                     // 1-cycle rd_en
                     state = State::beat_wait;
                 }
                 State::beat_wait: {
-                    // TODO: impl
+                    if wdata_valid {
+                        beat_data = wdata_dout;
+                    }
+                    if wmeta_valid {
+                        beat_strb = wmeta_dout[3:0];
+                    }
+
+                    if wdata_valid && wmeta_valid {
+                        beat_v = 1'b1;
+                        state  = State::w;
+                    }
                 }
                 State::w: {
-                    // TODO: impl
+                    if WVALID && WREADY {
+                        beat_v = 1'b0; // consume beat
+
+                        if w_left == 6'd1 {
+                            // end of sub-burst
+                            cur_addr += {sub_len_reg, 2'b00};
+                            cur_rem  -= sub_len_reg;
+                            w_left   =  6'd0;
+                            state    =  State::b;
+                        } else {
+                            w_left -= 6'd1;
+                            state  =  State::beat_req;
+                        }
+                    }
                 }
                 State::b: {
                     if BVALID {
