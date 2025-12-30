@@ -281,7 +281,10 @@ pub module drw_proc (
                 //   word2: A[31:24] R[23:16] G[15:8] B[7:0]
                 // ------------------------
                 State::setcolor2: {
-                    // TODO: impl
+                    if cmd_valid {
+                        reg_fcolor = CMDFIFO_RDATA;
+                        state      = State::fetch;
+                    }
                 }
                 // ------------------------
                 // PATBLT (3 words)
