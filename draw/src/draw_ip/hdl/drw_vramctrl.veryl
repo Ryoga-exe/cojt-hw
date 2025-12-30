@@ -1,0 +1,386 @@
+/// VRAM controller (AXI master)
+/// Convert the write stream (WADDRVLD/WADDR + WDATAVLD/WDATA/WSTRB/WLAST)
+/// coming from drw_proc to AXI Write (AW/W/B) and write to DDR (VRAM).
+pub module drw_vramctrl (
+    CLK  : input clock           ,
+    ARST : input reset           ,
+    RSTS : input reset           ,
+    START: input logic           ,
+    RESOL: input Resolution::Mode,
+
+    // write stream from proc
+    IN_WREADY: output logic    ,
+    WADDRVLD : input  logic    ,
+    WADDR    : input  logic<32>,
+    WDATAVLD : input  logic    ,
+    WDATA_IN : input  logic<32>,
+    WSTRB_IN : input  logic<4> ,
+    WLAST_IN : input  logic    ,
+
+    // read stream to proc
+    SDATAVLD: output logic    ,
+    SDATA   : output logic<32>,
+
+    // status
+    BUSY: output logic,
+
+    // AXI read address channel
+    ARADDR : output logic<32>,
+    ARLEN  : output logic<8> ,
+    ARVALID: output logic    ,
+    ARREADY: input  logic    ,
+
+    // AXI read data channel
+    RDATA : input  logic<32>,
+    RLAST : input  logic    ,
+    RVALID: input  logic    ,
+    RREADY: output logic    ,
+
+    // write address channel
+    AWADDR : output logic<32>,
+    AWLEN  : output logic<8> ,
+    AWVALID: output logic    ,
+    AWREADY: input  logic    ,
+
+    // write data channel
+    WDATA : output logic<32>,
+    WSTRB : output logic<4> ,
+    WLAST : output logic    ,
+    WVALID: output logic    ,
+    WREADY: input  logic    ,
+
+    // write response channel
+    BRESP : input  logic<2>,
+    BVALID: input  logic   ,
+    BREADY: output logic   ,
+) {
+    // Reset definition (Combined ARST and RSTS)
+    let rst: '_ default reset_sync_high = ARST | RSTS;
+
+    // ---------------- input side ----------------
+    var in_addr_reg: logic<32>;
+    var in_cnt     : logic<5> ;
+    let accept     : logic     = IN_WREADY && WDATAVLD && ((in_cnt != 5'd0) || WADDRVLD);
+    let need_desc  : logic     = WDATAVLD && WLAST_IN;
+
+    always_comb {
+        IN_WREADY = !wdata_full && !wmeta_full && (!need_desc || (!descA_full && !descL_full)) && !((in_cnt == 5'd15) && WDATAVLD && !WLAST_IN);
+
+        wdata_din   = WDATA_IN;
+        wmeta_din   = {28'd0, WSTRB_IN};
+        wdata_wr_en = accept;
+        wmeta_wr_en = accept;
+
+        // 1-beat burst のとき in_addr_reg がまだ古いので WADDR を使う
+        descA_din   = if in_cnt == 5'd0 ? WADDR : in_addr_reg;
+        descL_din   = {27'd0, (in_cnt + 5'd1)}; // 1..16
+        descA_wr_en = accept && WLAST_IN;
+        descL_wr_en = accept && WLAST_IN;
+    }
+
+    always_ff {
+        if_reset {
+            in_addr_reg = 32'h0;
+            in_cnt      = 5'd0;
+        } else {
+            if accept {
+                if in_cnt == 5'd0 {
+                    in_addr_reg = WADDR;
+                }
+                if WLAST_IN {
+                    in_cnt = 5'd0;
+                } else {
+                    in_cnt += 5'd1;
+                }
+            }
+        }
+    }
+
+    // ---------------- output side ----------------
+    enum State {
+        idle,
+        desc_req,
+        desc_wait,
+        aw,
+        beat_req,
+        beat_wait,
+        w,
+        b,
+    }
+    var state: State;
+
+    var cur_addr: logic<32>;
+    var cur_rem : logic<6> ;
+
+    var sub_len_reg: logic<6>;
+    var w_left     : logic<6>;
+
+    // latched descriptor/data
+    var descA_lat  : logic<32>;
+    var descA_lat_v: logic    ;
+    var descL_lat  : logic<32>;
+    var descL_lat_v: logic    ;
+
+    var beat_data: logic<32>;
+    var beat_strb: logic<4> ;
+    var beat_v   : logic    ;
+
+    // 4KB split
+    var bytes_left  : logic<13>;
+    var maxbeats    : logic<11>;
+    var sub_len_comb: logic<6> ;
+
+    always_comb {
+        bytes_left = 13'd4096 - {1'b0, cur_addr[11:0]};
+        maxbeats   = bytes_left[12:2];
+        if maxbeats == 11'd0 {
+            maxbeats = 11'd1;
+        }
+
+        if cur_rem == 6'd0 {
+            sub_len_comb = 6'd0;
+        } else if maxbeats >= {5'd0, cur_rem} {
+            sub_len_comb = cur_rem;
+        } else {
+            sub_len_comb = {1'b0, maxbeats[4:0]};
+        }
+
+        if cur_rem != 6'd0 && sub_len_comb == 6'd0 {
+            sub_len_comb = 6'd1;
+        }
+    }
+
+    always_comb {
+        descA_rd_en = (state == State::desc_req);
+        descL_rd_en = (state == State::desc_req);
+        wdata_rd_en = (state == State::beat_req);
+        wmeta_rd_en = (state == State::beat_req);
+    }
+
+    // AW/W/B
+    let have_wfifo: logic = (!wdata_empty) && (!wmeta_empty);
+    always_comb {
+        AWADDR = cur_addr;
+        AWLEN  = if sub_len_comb == 6'd0 ? 8'd0 : {3'b000, (sub_len_comb[4:0] - 5'd1)};
+
+        AWVALID = (state == State::aw) && have_wfifo;
+
+        WDATA  = beat_data;
+        WSTRB  = beat_strb;
+        WVALID = (state == State::w) && beat_v && (w_left != 6'd0);
+        WLAST  = WVALID && (w_left == 6'd1);
+
+        BREADY = 1'b1;
+    }
+
+    always_ff {
+        if_reset {
+            state = State::idle;
+
+            cur_addr = 32'h0;
+            cur_rem  = 6'd0;
+
+            sub_len_reg = 6'd0;
+            w_left      = 6'd0;
+
+            descA_lat   = 32'h0;
+            descL_lat   = 32'h0;
+            descA_lat_v = 1'b0;
+            descL_lat_v = 1'b0;
+
+            beat_data = 32'h0;
+            beat_strb = 4'h0;
+            beat_v    = 1'b0;
+        } else {
+            case state {
+                State::idle: {
+                    beat_v      = 1'b0;
+                    descA_lat_v = 1'b0;
+                    descL_lat_v = 1'b0;
+
+                    if !descA_empty && !descL_empty {
+                        state = State::desc_req;
+                    }
+                }
+                State::desc_req: {
+                    // 1-cycle rd_en
+                    state = State::desc_wait;
+                }
+                State::desc_wait: {
+                    if descA_valid {
+                        descA_lat   = descA_dout;
+                        descA_lat_v = 1'b1;
+                    }
+                    if descL_valid {
+                        descL_lat   = descL_dout;
+                        descL_lat_v = 1'b1;
+                    }
+
+                    if descA_lat_v && descL_lat_v {
+                        cur_addr = descA_lat;
+                        cur_rem  = {1'b0, descL_lat[4:0]}; // 1..16
+                        state    = State::aw;
+                    }
+                }
+                State::aw: {
+                    if AWREADY && have_wfifo {
+                        sub_len_reg = sub_len_comb;
+                        w_left      = sub_len_comb;
+                        beat_v      = 1'b0;
+                        state       = State::beat_req;
+                    }
+                }
+                State::beat_req: {
+                    // 1-cycle rd_en
+                    state = State::beat_wait;
+                }
+                State::beat_wait: {
+                    if wdata_valid {
+                        beat_data = wdata_dout;
+                    }
+                    if wmeta_valid {
+                        beat_strb = wmeta_dout[3:0];
+                    }
+
+                    if wdata_valid && wmeta_valid {
+                        beat_v = 1'b1;
+                        state  = State::w;
+                    }
+                }
+                State::w: {
+                    if WVALID && WREADY {
+                        beat_v = 1'b0; // consume beat
+
+                        if w_left == 6'd1 {
+                            // end of sub-burst
+                            cur_addr += {sub_len_reg, 2'b00};
+                            cur_rem  -= sub_len_reg;
+                            w_left   =  6'd0;
+                            state    =  State::b;
+                        } else {
+                            w_left -= 6'd1;
+                            state  =  State::beat_req;
+                        }
+                    }
+                }
+                State::b: {
+                    if BVALID {
+                        state = if cur_rem == 6'd0 ? State::idle : State::aw;
+                    }
+                }
+                default: {
+                    state = State::idle;
+                }
+            }
+        }
+    }
+
+    // read path unused (TODO: STEP-2)
+    always_comb {
+        ARADDR   = 32'h0;
+        ARLEN    = 8'h0;
+        ARVALID  = 1'b0;
+        RREADY   = 1'b0;
+        SDATAVLD = 1'b0;
+        SDATA    = 32'h0;
+    }
+
+    assign BUSY = (state != State::idle) || (in_cnt != 5'd0) || (!wdata_empty) || (!wmeta_empty) || !descA_empty || !descL_empty;
+
+    // ---------------- FIFO IP (32in/32out) ----------------
+    var wdata_wr_en: logic    ;
+    var wdata_rd_en: logic    ;
+    var wdata_din  : logic<32>;
+    var wdata_dout : logic<32>;
+    var wdata_empty: logic    ;
+    var wdata_full : logic    ;
+    var wdata_valid: logic    ;
+    var wdata_count: logic<12>;
+
+    inst u_fifo_wdata: $sv::fifo_32in32out_2048depth (
+        clk       : CLK        ,
+        rst       : rst        ,
+        wr_en     : wdata_wr_en,
+        din       : wdata_din  ,
+        rd_en     : wdata_rd_en,
+        dout      : wdata_dout ,
+        empty     : wdata_empty,
+        full      : wdata_full ,
+        valid     : wdata_valid,
+        overflow  : _          ,
+        underflow : _          ,
+        data_count: wdata_count,
+    );
+
+    var wmeta_wr_en: logic    ;
+    var wmeta_rd_en: logic    ;
+    var wmeta_din  : logic<32>;
+    var wmeta_dout : logic<32>;
+    var wmeta_empty: logic    ;
+    var wmeta_full : logic    ;
+    var wmeta_valid: logic    ;
+    var wmeta_count: logic<12>;
+
+    inst u_fifo_wmeta: $sv::fifo_32in32out_2048depth (
+        clk       : CLK        ,
+        rst       : rst        ,
+        wr_en     : wmeta_wr_en,
+        din       : wmeta_din  ,
+        rd_en     : wmeta_rd_en,
+        dout      : wmeta_dout ,
+        empty     : wmeta_empty,
+        full      : wmeta_full ,
+        valid     : wmeta_valid,
+        overflow  : _          ,
+        underflow : _          ,
+        data_count: wmeta_count,
+    );
+
+    var descA_wr_en: logic    ;
+    var descA_rd_en: logic    ;
+    var descA_din  : logic<32>;
+    var descA_dout : logic<32>;
+    var descA_empty: logic    ;
+    var descA_full : logic    ;
+    var descA_valid: logic    ;
+    var descA_count: logic<12>;
+
+    inst u_fifo_descA: $sv::fifo_32in32out_2048depth (
+        clk       : CLK        ,
+        rst       : rst        ,
+        wr_en     : descA_wr_en,
+        din       : descA_din  ,
+        rd_en     : descA_rd_en,
+        dout      : descA_dout ,
+        empty     : descA_empty,
+        full      : descA_full ,
+        valid     : descA_valid,
+        overflow  : _          ,
+        underflow : _          ,
+        data_count: descA_count,
+    );
+
+    var descL_wr_en: logic    ;
+    var descL_rd_en: logic    ;
+    var descL_din  : logic<32>;
+    var descL_dout : logic<32>;
+    var descL_empty: logic    ;
+    var descL_full : logic    ;
+    var descL_valid: logic    ;
+    var descL_count: logic<12>;
+
+    inst u_fifo_descL: $sv::fifo_32in32out_2048depth (
+        clk       : CLK        ,
+        rst       : rst        ,
+        wr_en     : descL_wr_en,
+        din       : descL_din  ,
+        rd_en     : descL_rd_en,
+        dout      : descL_dout ,
+        empty     : descL_empty,
+        full      : descL_full ,
+        valid     : descL_valid,
+        overflow  : _          ,
+        underflow : _          ,
+        data_count: descL_count,
+    );
+}

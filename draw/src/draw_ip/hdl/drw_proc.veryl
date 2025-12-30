@@ -1,0 +1,455 @@
+/// Command Analyzer and PATBLT generator
+///
+/// Commands
+/// - NOP         (0x00)
+/// - EODL        (0x0F)
+/// - SETFRAME    (0x20)
+/// - SETDRAWAREA (0x21)
+/// - SETFCOLOR   (0x23)
+pub module drw_proc (
+    CLK  : input clock           ,
+    ARST : input reset           ,
+    RSTS : input reset           , // soft reset
+    START: input logic           , // 1-cycle pulse
+    RESOL: input Resolution::Mode,
+
+    // command stream (from cmd FIFO)
+    CMDFIFO_EMPTY: input  logic    ,
+    CMDFIFO_RDATA: input  logic<32>,
+    CMDFIFO_RDEN : output logic    ,
+
+    // source data (for future BITBLT)
+    DRWVC_SDATAVLD: input logic    ,
+    DRWVC_SDATA   : input logic<32>,
+
+    // write stream to vramctrl
+    DRWVC_WREADY: input  logic    ,
+    WADDRVLD    : output logic    ,
+    WADDR       : output logic<32>,
+    WDATAVLD    : output logic    ,
+    WDATA       : output logic<32>,
+    WSTRB       : output logic<4> ,
+    WLAST       : output logic    ,
+
+    // status/interrupt
+    BUSY: output logic,
+    INT : output logic,
+) {
+    let rst: '_ default reset_sync_high = ARST | RSTS;
+
+    var cmd_rd_en   : logic;
+    var cmd_rd_en_d1: logic;
+    always_ff {
+        if_reset {
+            cmd_rd_en_d1 = 1'b0;
+        } else {
+            cmd_rd_en_d1 = cmd_rd_en;
+        }
+    }
+    let cmd_valid: logic = cmd_rd_en_d1;
+
+    const BURST_MAX: u32 = 16;
+
+    enum State {
+        idle,
+        fetch,
+        setframe2,
+        setframe3,
+        setarea2,
+        setarea3,
+        setcolor2,
+        patblt2,
+        patblt3,
+        draw,
+        eodl_done,
+    }
+    var state: State;
+
+    var reg_frame_base: logic<32>;
+    var reg_frame_w   : logic<11>;
+    var reg_frame_h   : logic<11>;
+
+    var reg_area_posx: logic<11>;
+    var reg_area_posy: logic<11>;
+    var reg_area_sizx: logic<11>;
+    var reg_area_sizy: logic<11>;
+
+    var reg_fcolor: logic<32>; // ARGB8888
+
+    // PATBLT params
+    var pat_dposx: signed logic<12>;
+    var pat_dposy: signed logic<12>;
+
+    // draw (clipped) region [x0, x1), [y0, y1)
+    var draw_x0: logic<12>;
+    var draw_x1: logic<12>;
+    var draw_y0: logic<12>;
+    var draw_y1: logic<12>;
+
+    // iterators
+    var cur_x: logic<12>;
+    var cur_y: logic<12>;
+
+    // current pixel address (bytes)
+    var addr_reg: logic<32>;
+
+    // burst control
+    var burst_len: logic<5>; // 1..16
+    var burst_idx: logic<5>; // 0..15
+
+    // ----------------------------
+    // command FIFO read (FWFT)
+    // ----------------------------
+    always_comb {
+        cmd_rd_en = 1'b0;
+
+        if !CMDFIFO_EMPTY {
+            if (state == State::fetch) || (state == State::setframe2) || (state == State::setframe3) || (state == State::setarea2) || (state == State::setarea3) || (state == State::setcolor2) || (state == State::patblt2) || (state == State::patblt3 && !cmd_valid) {
+                cmd_rd_en = 1'b1;
+            }
+        }
+    }
+    assign CMDFIFO_RDEN = cmd_rd_en;
+    let cmd_fire    : logic = CMDFIFO_RDEN & ~CMDFIFO_EMPTY;
+
+    // ----------------------------
+    // output signals (combinational from state)
+    // ----------------------------
+    always_comb {
+        // defaults
+        WADDRVLD = 1'b0;
+        WADDR    = 32'h0;
+        WDATAVLD = 1'b0;
+        WDATA    = 32'h0;
+        WSTRB    = 4'h0;
+        WLAST    = 1'b0;
+
+        if state == State::draw {
+            // data beat always valid while drawing
+            WDATAVLD = 1'b1;
+            WDATA    = reg_fcolor;
+            WSTRB    = 4'hF;
+
+            // at the first beat of each burst, present start address
+            if burst_idx == 5'd0 {
+                WADDRVLD = 1'b1;
+                WADDR    = addr_reg;
+            }
+
+            // last beat in this burst
+            if burst_idx == (burst_len - 5'd1) {
+                WLAST = 1'b1;
+            }
+        }
+    }
+
+    // ----------------------------
+    // BUSY
+    // ----------------------------
+    assign BUSY = (state != State::idle);
+
+    // ----------------------------
+    // main FSM (+ INT pulse)
+    // ----------------------------
+    always_ff {
+        if_reset {
+            state = State::idle;
+
+            reg_frame_base = 32'h0;
+            reg_frame_w    = 11'd0;
+            reg_frame_h    = 11'd0;
+
+            reg_area_posx = '0;
+            reg_area_posy = '0;
+            reg_area_sizx = 11'd0;
+            reg_area_sizy = 11'd0;
+
+            reg_fcolor = 32'h00000000;
+
+            pat_dposx = '0;
+            pat_dposy = '0;
+
+            draw_x0 = 12'd0;
+            draw_x1 = 12'd0;
+            draw_y0 = 12'd0;
+            draw_y1 = 12'd0;
+            cur_x   = 12'd0;
+            cur_y   = 12'd0;
+
+            addr_reg  = 32'd0;
+            burst_len = 5'd1;
+            burst_idx = 5'd0;
+
+            INT = 1'b0;
+        } else {
+            // default: INT pulse is 1-cycle
+            INT = 1'b0;
+
+            // START: begin new list
+            if START {
+                state = State::fetch;
+
+                // reset any in-flight draw
+                draw_x0 = 12'd0;
+                draw_x1 = 12'd0;
+                draw_y0 = 12'd0;
+                draw_y1 = 12'd0;
+                cur_x   = 12'd0;
+                cur_y   = 12'd0;
+
+                addr_reg  = 32'd0;
+                burst_len = 5'd1;
+                burst_idx = 5'd0;
+            }
+
+            case state {
+                State::idle: {
+                    // wait for START
+                }
+                // ------------------------
+                // fetch opcode word
+                // ------------------------
+                State::fetch: {
+                    if cmd_valid {
+                        case CMDFIFO_RDATA[31:24] {
+                            DrawOpcode::NOP: {
+                                state = State::fetch;
+                            }
+                            DrawOpcode::EODL: {
+                                state = State::eodl_done;
+                            }
+                            DrawOpcode::SETFRAME: {
+                                state = State::setframe2;
+                            }
+                            DrawOpcode::SETDRAWAREA: {
+                                state = State::setarea2;
+                            }
+                            DrawOpcode::SETFCOLOR: {
+                                state = State::setcolor2;
+                            }
+                            DrawOpcode::SETBLENDOFF: {
+                                state = State::fetch; // TODO: STEP-2
+                            }
+                            DrawOpcode::PATBLT: {
+                                state = State::patblt2;
+                            }
+                            default: {
+                                state = State::fetch;
+                            }
+                        }
+                    }
+                }
+                // ------------------------
+                // SETFRAME (3 words)
+                //   word2: VRAMADR
+                //   word3: WIDTH[26:16] HEIGHT[10:0]
+                // ------------------------
+                State::setframe2: {
+                    if cmd_valid {
+                        reg_frame_base = CMDFIFO_RDATA;
+                        state          = State::setframe3;
+                    }
+                }
+                State::setframe3: {
+                    if cmd_valid {
+                        reg_frame_w = CMDFIFO_RDATA[26:16];
+                        reg_frame_h = CMDFIFO_RDATA[10:0];
+                        state       = State::fetch;
+                    }
+                }
+                // ------------------------
+                // SETDRAWAREA (3 words)
+                //   word2: POSX[26:16] (u11) POSY[10:0] (u11)
+                //   word3: SIZX[26:16] (u11)      SIZY[10:0] (u11)
+                // ------------------------
+                State::setarea2: {
+                    if cmd_valid {
+                        reg_area_posx = CMDFIFO_RDATA[26:16];
+                        reg_area_posy = CMDFIFO_RDATA[10:0];
+                        state         = State::setarea3;
+                    }
+                }
+                State::setarea3: {
+                    if cmd_valid {
+                        reg_area_sizx = CMDFIFO_RDATA[26:16];
+                        reg_area_sizy = CMDFIFO_RDATA[10:0];
+                        state         = State::fetch;
+                    }
+                }
+                // ------------------------
+                // SETFCOLOR (2 words)
+                //   word2: A[31:24] R[23:16] G[15:8] B[7:0]
+                // ------------------------
+                State::setcolor2: {
+                    if cmd_valid {
+                        reg_fcolor = CMDFIFO_RDATA;
+                        state      = State::fetch;
+                    }
+                }
+                // ------------------------
+                // PATBLT (3 words)
+                //   word2: DPOSX[27:16] (signed12), DPOSY[11:0] (signed12)
+                //   word3: DSIZX[26:16] (u11),      DSIZY[10:0] (u11)
+                // ------------------------
+                State::patblt2: {
+                    if cmd_valid {
+                        pat_dposx = $signed(CMDFIFO_RDATA[27:16]);
+                        pat_dposy = $signed(CMDFIFO_RDATA[11:0]);
+                        state     = State::patblt3;
+                    }
+                }
+                State::patblt3: {
+                    if cmd_valid {
+                        // capture size directly from the word we just popped
+                        let dsizx_new: logic<11> = CMDFIFO_RDATA[26:16];
+                        let dsizy_new: logic<11> = CMDFIFO_RDATA[10:0];
+
+                        let patx32 : signed logic<32> = $signed({pat_dposx[11] repeat 20, pat_dposx});
+                        let paty32 : signed logic<32> = $signed({pat_dposy[11] repeat 20, pat_dposy});
+                        let areax32: signed logic<32> = $signed({21'd0, reg_area_posx});
+                        let areay32: signed logic<32> = $signed({21'd0, reg_area_posy});
+
+                        // rect: [dpos, dpos+dsiz)
+                        let rx0: signed logic<32> = patx32;
+                        let ry0: signed logic<32> = paty32;
+                        let rx1: signed logic<32> = patx32 + $signed({21'd0, dsizx_new});
+                        let ry1: signed logic<32> = paty32 + $signed({21'd0, dsizy_new});
+
+                        // draw area: [pos, pos+size)
+                        let ax0: signed logic<32> = areax32;
+                        let ay0: signed logic<32> = areay32;
+                        let ax1: signed logic<32> = areax32 + $signed({21'd0, reg_area_sizx});
+                        let ay1: signed logic<32> = areay32 + $signed({21'd0, reg_area_sizy});
+
+                        // frame bounds: [0, w) [0, h)
+                        let fx0: signed logic<32> = 32'sd0;
+                        let fy0: signed logic<32> = 32'sd0;
+                        let fx1: signed logic<32> = $signed({21'd0, reg_frame_w});
+                        let fy1: signed logic<32> = $signed({21'd0, reg_frame_h});
+
+                        // intersection
+                        let cx0: signed logic<32> = Smax32(Smax32(rx0, ax0), fx0);
+                        let cy0: signed logic<32> = Smax32(Smax32(ry0, ay0), fy0);
+                        let cx1: signed logic<32> = Smin32(Smin32(rx1, ax1), fx1);
+                        let cy1: signed logic<32> = Smin32(Smin32(ry1, ay1), fy1);
+
+                        if (cx0 >= cx1) || (cy0 >= cy1) {
+                            // nothing to draw
+                            state = State::fetch;
+                        } else {
+                            // convert to unsigned 12-bit (safe because clipped with frame [0, w/h))
+                            let x0_u  : logic       <12> = cx0[11:0];
+                            let x1_u  : logic       <12> = cx1[11:0];
+                            let y0_u  : logic       <12> = cy0[11:0];
+                            let y1_u  : logic       <12> = cy1[11:0];
+                            let remx  : signed logic<32> = cx1 - cx0;
+                            let remx_u: logic       <12> = remx[11:0];
+
+                            draw_x0 = x0_u;
+                            draw_x1 = x1_u;
+                            draw_y0 = y0_u;
+                            draw_y1 = y1_u;
+                            cur_x   = x0_u;
+                            cur_y   = y0_u;
+
+                            // init address to (cx0, cy0)
+                            addr_reg = PixAddr(reg_frame_base, reg_frame_w, x0_u, y0_u);
+
+                            // init burst
+                            burst_len = Min16(remx_u);
+                            burst_idx = 5'd0;
+
+                            state = State::draw;
+                        }
+                    }
+                }
+                // ------------------------
+                // DRAW: stream pixels to vramctrl
+                // ------------------------
+                State::draw: {
+                    if DRWVC_WREADY {
+                        // accept 1 beat
+                        let end_of_burst: logic = (burst_idx == (burst_len - 5'd1));
+                        let end_of_line : logic = ((cur_x + 12'd1) == draw_x1);
+                        let end_of_rect : logic = (end_of_line && ((cur_y + 12'd1) == draw_y1));
+
+                        // advance pixel in any case
+                        addr_reg  = addr_reg + 32'd4;
+                        cur_x     = cur_x + 12'd1;
+                        burst_idx = burst_idx + 5'd1;
+
+                        if end_of_burst {
+                            // new burst starts next
+                            burst_idx = 5'd0;
+
+                            if end_of_line {
+                                // go to next line (or finish)
+                                if end_of_rect {
+                                    state = State::fetch;
+                                } else {
+                                    cur_y = cur_y + 12'd1;
+                                    cur_x = draw_x0;
+
+                                    addr_reg  = PixAddr(reg_frame_base, reg_frame_w, draw_x0, cur_y + 12'd1);
+                                    burst_len = Min16(draw_x1 - draw_x0);
+                                    state     = State::draw;
+                                }
+                            } else {
+                                // continue same line: remaining = x1 - (x+1)
+                                burst_len = Min16(draw_x1 - (cur_x + 12'd1));
+                                state     = State::draw;
+                            }
+                        } else {
+                            // stay in same burst
+                            state = State::draw;
+                        }
+                    }
+                }
+                // ------------------------
+                // EODL
+                // ------------------------
+                State::eodl_done: {
+                    // drawingは S_DRAW に入っている間しか起きないので、
+                    // ここまで到達していれば proc 側の書き込み生成は完了している。
+                    INT   = 1'b1;
+                    state = State::idle;
+                }
+                default: {
+                    state = State::idle;
+                }
+            }
+        }
+    }
+
+    // helper: compute address of (x, y) in bytes
+    function PixAddr (
+        base : input logic<32>,
+        width: input logic<11>,
+        x    : input logic<12>,
+        y    : input logic<12>,
+    ) -> logic<32> {
+        return base + (((y * width) + x) << 2);
+    }
+
+    // helper: min(16, a)
+    function Min16 (
+        a: input logic<12>,
+    ) -> logic<5> {
+        return if a >= 12'd16 ? 5'd16 : a[4:0];
+    }
+
+    // helper: signed helpers (keep 4-state behavior by using logic vectors)
+    function Smax32 (
+        a: input signed logic<32>,
+        b: input signed logic<32>,
+    ) -> signed logic<32> {
+        return if a >: b ? a : b;
+    }
+
+    function Smin32 (
+        a: input signed logic<32>,
+        b: input signed logic<32>,
+    ) -> signed logic<32> {
+        return if a <: b ? a : b;
+    }
+}

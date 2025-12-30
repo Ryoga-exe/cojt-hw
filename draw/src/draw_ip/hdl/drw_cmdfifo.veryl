@@ -24,7 +24,7 @@ pub module drw_cmdfifo (
 
     inst u_fifo_cmd: $sv::fifo_32in32out_2048depth (
         clk       : CLK       ,
-        din       : RDATA     ,
+        din       : WDATA     ,
         rd_en     : RDEN      ,
         rst       : rst       ,
         wr_en     : WREN      ,
@@ -37,6 +37,7 @@ pub module drw_cmdfifo (
         data_count: data_count,
     );
 
+    // widen count to 16-bit for regctrl
     assign COUNT = {4'b0, data_count};
 
 }
