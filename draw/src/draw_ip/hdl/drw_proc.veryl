@@ -292,10 +292,76 @@ pub module drw_proc (
                 //   word3: DSIZX[26:16] (u11),      DSIZY[10:0] (u11)
                 // ------------------------
                 State::patblt2: {
-                    // TODO: impl
+                    if cmd_valid {
+                        pat_dposx = $signed(CMDFIFO_RDATA[27:16]);
+                        pat_dposy = $signed(CMDFIFO_RDATA[11:0]);
+                        state     = State::patblt3;
+                    }
                 }
                 State::patblt3: {
-                    // TODO: impl
+                    if cmd_valid {
+                        // capture size directly from the word we just popped
+                        let dsizx_new: logic<11> = CMDFIFO_RDATA[26:16];
+                        let dsizy_new: logic<11> = CMDFIFO_RDATA[10:0];
+
+                        let patx32 : signed logic<32> = $signed({pat_dposx[11] repeat 20, pat_dposx});
+                        let paty32 : signed logic<32> = $signed({pat_dposy[11] repeat 20, pat_dposy});
+                        let areax32: signed logic<32> = $signed({21'd0, reg_area_posx});
+                        let areay32: signed logic<32> = $signed({21'd0, reg_area_posy});
+
+                        // rect: [dpos, dpos+dsiz)
+                        let rx0: signed logic<32> = patx32;
+                        let ry0: signed logic<32> = paty32;
+                        let rx1: signed logic<32> = patx32 + $signed({21'd0, dsizx_new});
+                        let ry1: signed logic<32> = paty32 + $signed({21'd0, dsizy_new});
+
+                        // draw area: [pos, pos+size)
+                        let ax0: signed logic<32> = areax32;
+                        let ay0: signed logic<32> = areay32;
+                        let ax1: signed logic<32> = areax32 + $signed({21'd0, reg_area_sizx});
+                        let ay1: signed logic<32> = areay32 + $signed({21'd0, reg_area_sizy});
+
+                        // frame bounds: [0, w) [0, h)
+                        let fx0: signed logic<32> = 32'sd0;
+                        let fy0: signed logic<32> = 32'sd0;
+                        let fx1: signed logic<32> = $signed({21'd0, reg_frame_w});
+                        let fy1: signed logic<32> = $signed({21'd0, reg_frame_h});
+
+                        // intersection
+                        let cx0: signed logic<32> = Smax32(Smax32(rx0, ax0), fx0);
+                        let cy0: signed logic<32> = Smax32(Smax32(ry0, ay0), fy0);
+                        let cx1: signed logic<32> = Smin32(Smin32(rx1, ax1), fx1);
+                        let cy1: signed logic<32> = Smin32(Smin32(ry1, ay1), fy1);
+
+                        if (cx0 >= cx1) || (cy0 >= cy1) {
+                            // nothing to draw
+                            state = State::fetch;
+                        } else {
+                            // convert to unsigned 12-bit (safe because clipped with frame [0, w/h))
+                            let x0_u  : logic       <12> = cx0[11:0];
+                            let x1_u  : logic       <12> = cx1[11:0];
+                            let y0_u  : logic       <12> = cy0[11:0];
+                            let y1_u  : logic       <12> = cy1[11:0];
+                            let remx  : signed logic<32> = cx1 - cx0;
+                            let remx_u: logic       <12> = remx[11:0];
+
+                            draw_x0 = x0_u;
+                            draw_x1 = x1_u;
+                            draw_y0 = y0_u;
+                            draw_y1 = y1_u;
+                            cur_x   = x0_u;
+                            cur_y   = y0_u;
+
+                            // init address to (cx0, cy0)
+                            addr_reg = PixAddr(reg_frame_base, reg_frame_w, x0_u, y0_u);
+
+                            // init burst
+                            burst_len = Min16(remx_u);
+                            burst_idx = 5'd0;
+
+                            state = State::draw;
+                        }
+                    }
                 }
                 // ------------------------
                 // DRAW: stream pixels to vramctrl
@@ -370,5 +436,20 @@ pub module drw_proc (
         a: input logic<12>,
     ) -> logic<5> {
         return if a >= 12'd16 ? 5'd16 : a[4:0];
+    }
+
+    // helper: signed helpers (keep 4-state behavior by using logic vectors)
+    function Smax32 (
+        a: input signed logic<32>,
+        b: input signed logic<32>,
+    ) -> signed logic<32> {
+        return if a >: b ? a : b;
+    }
+
+    function Smin32 (
+        a: input signed logic<32>,
+        b: input signed logic<32>,
+    ) -> signed logic<32> {
+        return if a <: b ? a : b;
     }
 }
