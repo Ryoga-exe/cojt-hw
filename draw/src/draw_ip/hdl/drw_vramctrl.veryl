@@ -194,10 +194,17 @@ pub module drw_vramctrl (
         } else {
             case state {
                 State::idle: {
-                    // TODO: impl
+                    beat_v      = 1'b0;
+                    descA_lat_v = 1'b0;
+                    descL_lat_v = 1'b0;
+
+                    if !descA_empty && !descL_empty {
+                        state = State::desc_req;
+                    }
                 }
                 State::desc_req: {
-                    // TODO: impl
+                    // 1-cycle rd_en
+                    state = State::desc_wait;
                 }
                 State::desc_wait: {
                     // TODO: impl
@@ -206,7 +213,8 @@ pub module drw_vramctrl (
                     // TODO: impl
                 }
                 State::beat_req: {
-                    // TODO: impl
+                    // 1-cycle rd_en
+                    state = State::beat_wait;
                 }
                 State::beat_wait: {
                     // TODO: impl
@@ -215,7 +223,9 @@ pub module drw_vramctrl (
                     // TODO: impl
                 }
                 State::b: {
-                    // TODO: impl
+                    if BVALID {
+                        state = if cur_rem == 6'd0 ? State::idle : State::aw;
+                    }
                 }
                 default: {
                     state = State::idle;
