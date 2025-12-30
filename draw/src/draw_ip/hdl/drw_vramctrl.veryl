@@ -56,4 +56,101 @@ pub module drw_vramctrl (
 ) {
     // Reset definition (Combined ARST and RSTS)
     let rst: '_ default reset_sync_high = ARST | RSTS;
+
+    // ---------------- FIFO IP (32in/32out) ----------------
+    var wdata_wr_en: logic    ;
+    var wdata_rd_en: logic    ;
+    var wdata_din  : logic<32>;
+    var wdata_dout : logic<32>;
+    var wdata_empty: logic    ;
+    var wdata_full : logic    ;
+    var wdata_valid: logic    ;
+    var wdata_count: logic<12>;
+
+    inst u_fifo_wdata: $sv::fifo_32in32out_2048depth (
+        clk       : CLK        ,
+        rst       : rst        ,
+        wr_en     : wdata_wr_en,
+        din       : wdata_din  ,
+        rd_en     : wdata_rd_en,
+        dout      : wdata_dout ,
+        empty     : wdata_empty,
+        full      : wdata_full ,
+        valid     : wdata_valid,
+        overflow  : _          ,
+        underflow : _          ,
+        data_count: wdata_count,
+    );
+
+    var wmeta_wr_en: logic    ;
+    var wmeta_rd_en: logic    ;
+    var wmeta_din  : logic<32>;
+    var wmeta_dout : logic<32>;
+    var wmeta_empty: logic    ;
+    var wmeta_full : logic    ;
+    var wmeta_valid: logic    ;
+    var wmeta_count: logic<12>;
+
+    inst u_fifo_wmeta: $sv::fifo_32in32out_2048depth (
+        clk       : CLK        ,
+        rst       : rst        ,
+        wr_en     : wmeta_wr_en,
+        din       : wmeta_din  ,
+        rd_en     : wmeta_rd_en,
+        dout      : wmeta_dout ,
+        empty     : wmeta_empty,
+        full      : wmeta_full ,
+        valid     : wmeta_valid,
+        overflow  : _          ,
+        underflow : _          ,
+        data_count: wmeta_count,
+    );
+
+    var descA_wr_en: logic    ;
+    var descA_rd_en: logic    ;
+    var descA_din  : logic<32>;
+    var descA_dout : logic<32>;
+    var descA_empty: logic    ;
+    var descA_full : logic    ;
+    var descA_valid: logic    ;
+    var descA_count: logic<12>;
+
+    inst u_fifo_descA: $sv::fifo_32in32out_2048depth (
+        clk       : CLK        ,
+        rst       : rst        ,
+        wr_en     : descA_wr_en,
+        din       : descA_din  ,
+        rd_en     : descA_rd_en,
+        dout      : descA_dout ,
+        empty     : descA_empty,
+        full      : descA_full ,
+        valid     : descA_valid,
+        overflow  : _          ,
+        underflow : _          ,
+        data_count: descA_count,
+    );
+
+    var descL_wr_en: logic    ;
+    var descL_rd_en: logic    ;
+    var descL_din  : logic<32>;
+    var descL_dout : logic<32>;
+    var descL_empty: logic    ;
+    var descL_full : logic    ;
+    var descL_valid: logic    ;
+    var descL_count: logic<12>;
+
+    inst u_fifo_descL: $sv::fifo_32in32out_2048depth (
+        clk       : CLK        ,
+        rst       : rst        ,
+        wr_en     : descL_wr_en,
+        din       : descL_din  ,
+        rd_en     : descL_rd_en,
+        dout      : descL_dout ,
+        empty     : descL_empty,
+        full      : descL_full ,
+        valid     : descL_valid,
+        overflow  : _          ,
+        underflow : _          ,
+        data_count: descL_count,
+    );
 }
