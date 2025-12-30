@@ -116,8 +116,10 @@ pub module drw_vramctrl (
     var w_left     : logic<6>;
 
     // latched descriptor/data
-    var descA_lat: logic<32>;
-    var descL_lat: logic<32>;
+    var descA_lat  : logic<32>;
+    var descA_lat_v: logic    ;
+    var descL_lat  : logic<32>;
+    var descL_lat_v: logic    ;
 
     var beat_data: logic<32>;
     var beat_strb: logic<4> ;
@@ -157,6 +159,82 @@ pub module drw_vramctrl (
 
     // AW/W/B
     let have_wfifo: logic = (!wdata_empty) && (!wmeta_empty);
+    always_comb {
+        AWADDR = cur_addr;
+        AWLEN  = if sub_len_comb == 6'd0 ? 8'd0 : {3'b000, (sub_len_comb[4:0] - 5'd1)};
+
+        AWVALID = (state == State::aw) && have_wfifo;
+
+        WDATA  = beat_data;
+        WSTRB  = beat_strb;
+        WVALID = (state == State::w) && beat_v && (w_left != 6'd0);
+        WLAST  = WVALID && (w_left == 6'd1);
+
+        BREADY = 1'b1;
+    }
+
+    always_ff {
+        if_reset {
+            state = State::idle;
+
+            cur_addr = 32'h0;
+            cur_rem  = 6'd0;
+
+            sub_len_reg = 6'd0;
+            w_left      = 6'd0;
+
+            descA_lat   = 32'h0;
+            descL_lat   = 32'h0;
+            descA_lat_v = 1'b0;
+            descL_lat_v = 1'b0;
+
+            beat_data = 32'h0;
+            beat_strb = 4'h0;
+            beat_v    = 1'b0;
+        } else {
+            case state {
+                State::idle: {
+                    // TODO: impl
+                }
+                State::desc_req: {
+                    // TODO: impl
+                }
+                State::desc_wait: {
+                    // TODO: impl
+                }
+                State::aw: {
+                    // TODO: impl
+                }
+                State::beat_req: {
+                    // TODO: impl
+                }
+                State::beat_wait: {
+                    // TODO: impl
+                }
+                State::w: {
+                    // TODO: impl
+                }
+                State::b: {
+                    // TODO: impl
+                }
+                default: {
+                    state = State::idle;
+                }
+            }
+        }
+    }
+
+    // read path unused (TODO: STEP-2)
+    always_comb {
+        ARADDR   = 32'h0;
+        ARLEN    = 8'h0;
+        ARVALID  = 1'b0;
+        RREADY   = 1'b0;
+        SDATAVLD = 1'b0;
+        SDATA    = 32'h0;
+    }
+
+    assign BUSY = (state != State::idle) || (in_cnt != 5'd0) || (!wdata_empty) || (!wmeta_empty) || !descA_empty || !descL_empty;
 
     // ---------------- FIFO IP (32in/32out) ----------------
     var wdata_wr_en: logic    ;
