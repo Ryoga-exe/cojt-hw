@@ -210,7 +210,34 @@ pub module drw_proc (
                 // fetch opcode word
                 // ------------------------
                 State::fetch: {
-                    // TODO: impl
+                    if cmd_valid {
+                        case CMDFIFO_RDATA[31:24] {
+                            DrawOpcode::NOP: {
+                                state = State::fetch;
+                            }
+                            DrawOpcode::EODL: {
+                                state = State::eodl_done;
+                            }
+                            DrawOpcode::SETFRAME: {
+                                state = State::setframe2;
+                            }
+                            DrawOpcode::SETDRAWAREA: {
+                                state = State::setarea2;
+                            }
+                            DrawOpcode::SETFCOLOR: {
+                                state = State::setcolor2;
+                            }
+                            DrawOpcode::SETBLENDOFF: {
+                                state = State::fetch; // TODO: STEP-2
+                            }
+                            DrawOpcode::PATBLT: {
+                                state = State::patblt2;
+                            }
+                            default: {
+                                state = State::fetch;
+                            }
+                        }
+                    }
                 }
                 // ------------------------
                 // SETFRAME (3 words)
