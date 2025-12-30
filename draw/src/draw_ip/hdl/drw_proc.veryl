@@ -318,4 +318,21 @@ pub module drw_proc (
             }
         }
     }
+
+    // helper: compute address of (x, y) in bytes
+    function PixAddr (
+        base : input logic<32>,
+        width: input logic<11>,
+        x    : input logic<12>,
+        y    : input logic<12>,
+    ) -> logic<32> {
+        return base + (((y * width) + x) << 2);
+    }
+
+    // helper: min(16, a)
+    function Min16 (
+        a: input logic<12>,
+    ) -> logic<5> {
+        return if a >= 12'd16 ? 5'd16 : a[4:0];
+    }
 }
